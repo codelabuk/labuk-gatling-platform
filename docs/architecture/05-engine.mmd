@@ -25,7 +25,7 @@ flowchart LR
         inj["injection + throttle"]
         sla["SLAs -> Gatling assertions"]
     end
-    plugins["Plugins (ServiceLoader)<br/>sql step, jdbc data source"]
+    plugins["Plugins (ServiceLoader)<br/>sql + jdbc, flight + flight data source"]
 
     model --> split --> setupscn & chain & inj
     chain --> auth
@@ -38,7 +38,9 @@ flowchart LR
     subgraph runtime["Gatling runtime"]
         netty["HTTP over Netty<br/>(non-blocking)"]
         jdbc["SQL thread pool<br/>HikariCP per connection"]
+        flt["Flight thread pool<br/>gRPC channels per data source"]
     end
-    sim --> netty & jdbc
+    sim --> netty & jdbc & flt
     netty --> apis["APIs"]
     jdbc --> dbs[("Databases")]
+    flt --> flightsrv[("Arrow Flight servers<br/>e.g. labukDB")]

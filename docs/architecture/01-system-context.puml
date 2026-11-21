@@ -34,6 +34,7 @@ cloud "Kubernetes cluster (on-prem)" {
 package "Systems under test" <<sut>> {
   component "HTTP / REST APIs" as apis <<sut>>
   database "Databases\nOracle, PostgreSQL, ... (JDBC)" as dbs <<sut>>
+  database "Arrow Flight servers\ne.g. labukDB" as flightsrv <<sut>>
 }
 
 ' control
@@ -64,6 +65,7 @@ cli -[#D98E04]-> minio : perf fetch
 cli -[#C0392B,bold]-> apis : perf run (local debug load)
 workers -[#C0392B,bold]-> apis : load
 workers -[#C0392B,bold]-> dbs : load
+workers -[#C0392B,bold]-> flightsrv : load (gRPC)
 
 ' live metrics
 dashboard -[#17A2B8,dashed]-> workers : live metrics

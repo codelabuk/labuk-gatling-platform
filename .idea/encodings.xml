@@ -6,6 +6,8 @@
     <file url="file://$PROJECT_DIR$/gatling-api-core/src/main/java" charset="UTF-8" />
     <file url="file://$PROJECT_DIR$/gatling-api-core/src/main/resources" charset="UTF-8" />
     <file url="file://$PROJECT_DIR$/gatling-api-core/src/main/scala" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/gatling-flight/src/main/resources" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/gatling-flight/src/main/scala" charset="UTF-8" />
     <file url="file://$PROJECT_DIR$/gatling-runner/src/main/resources" charset="UTF-8" />
     <file url="file://$PROJECT_DIR$/gatling-runner/src/main/scala" charset="UTF-8" />
     <file url="file://$PROJECT_DIR$/gatling-sql/src/main/resources" charset="UTF-8" />

@@ -30,6 +30,12 @@
             <artifactId>gatling-sql</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <!-- `flight` steps (Apache Arrow Flight: GetFlightInfo, DoGet, DoPut) -->
+        <dependency>
+            <groupId>org.codelabuk</groupId>
+            <artifactId>gatling-flight</artifactId>
+            <version>${project.version}</version>
+        </dependency>
         <!-- the core's mock API, to run converted LoadRunner scripts in tests -->
         <dependency>
             <groupId>org.codelabuk</groupId>
@@ -87,7 +93,7 @@
                     <reportsDirectory>${project.build.directory}/surefire-reports</reportsDirectory>
                     <junitxml>.</junitxml>
                     <!-- VuGenSpec runs real Gatling in the test JVM -->
-                    <argLine>--add-opens=java.base/java.lang=ALL-UNNAMED</argLine>
+                    <argLine>--add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED</argLine>
                 </configuration>
                 <executions>
                     <execution>
@@ -137,6 +143,7 @@
                         <jvmFlags>
                             <!-- Gatling's reports read JDK string internals -->
                             <jvmFlag>--add-opens=java.base/java.lang=ALL-UNNAMED</jvmFlag>
+                            <jvmFlag>--add-opens=java.base/java.nio=ALL-UNNAMED</jvmFlag>
                             <!-- size the heap from the pod's memory limit instead of a fixed -Xmx -->
                             <jvmFlag>-XX:MaxRAMPercentage=75</jvmFlag>
                         </jvmFlags>

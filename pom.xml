@@ -11,6 +11,7 @@
     <modules>
         <module>gatling-api-core</module>
         <module>gatling-sql</module>
+        <module>gatling-flight</module>
         <module>gatling-runner</module>
         <module>loadtest-operator</module>
     </modules>
@@ -29,6 +30,24 @@
                 <groupId>org.slf4j</groupId>
                 <artifactId>slf4j-api</artifactId>
                 <version>2.0.16</version>
+            </dependency>
+            <!-- One Netty for everything: Gatling's (4.1.115). Arrow Flight would otherwise add 4.1.100 / 4.1.108 next to
+                 it, and Netty modules must all be the same version. -->
+            <dependency>
+                <groupId>io.netty</groupId>
+                <artifactId>netty-bom</artifactId>
+                <version>4.1.115.Final</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <!-- Arrow Flight 16.1.0 comes with gRPC 1.63 (built for Netty 4.1.100); on Netty 4.1.115 its HTTP/2 streams
+                 broke ("http2 exception", "end-of-stream mid-frame"). gRPC 1.76 works with Gatling's Netty. -->
+            <dependency>
+                <groupId>io.grpc</groupId>
+                <artifactId>grpc-bom</artifactId>
+                <version>1.76.0</version>
+                <type>pom</type>
+                <scope>import</scope>
             </dependency>
         </dependencies>
     </dependencyManagement>

@@ -32,6 +32,7 @@ flowchart LR
     subgraph sut["Systems under test"]
         apis["HTTP / REST APIs"]
         dbs[("Databases<br/>Oracle, PostgreSQL, ... via JDBC")]
+        flightsrv[("Arrow Flight servers<br/>e.g. labukDB")]
     end
 
     tester -->|"browser, HTTPS: test plans,<br/>runs, live view, reports"| ingress --> dashboard
@@ -49,6 +50,7 @@ flowchart LR
     validate & workers -.->|"or clone (CI / GitOps)"| git
     workers -->|"load"| apis
     workers -->|"load"| dbs
+    workers -->|"load (gRPC)"| flightsrv
     dashboard -->|"live metrics"| workers
     prom -.->|"scrape"| workers
     cli -->|"perf fetch"| minio

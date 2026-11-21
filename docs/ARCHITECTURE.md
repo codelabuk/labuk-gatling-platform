@@ -35,6 +35,7 @@ Fixed technology choices: Java 17, Scala 2.13.15, **Gatling 3.13.1** (pinned - n
 |---|---|---|---|
 | **gatling-api-core** | Scala | YAML loading and validation, the engine (steps, auth, data, load, SLAs), worker split, log merging, live metrics, run summaries | `gatling-api-core/` |
 | **gatling-sql** | Scala, HikariCP | `sql` steps (query, update, call, batch) and `jdbc` data sources, as plugins | `gatling-sql/` |
+| **gatling-flight** | Scala, Arrow Flight 16.1 (gRPC) | `flight` steps (GetFlightInfo + DoGet, DoPut) and `flight` data sources, as plugins | `gatling-flight/` |
 | **gatling-runner** | Scala | The `perf` command: validate, run, setup, worker, report, fetch (with `--snapshot`), submit, status, convert-lr; S3 client; distribution zip and image | `gatling-runner/` |
 | **loadtest-operator** | Java, JOSDK | Watches `LoadTest` resources and runs each as validate → setup → workers → report Jobs; gets the tests into every pod (S3 suite, Git, ConfigMap or image) | `loadtest-operator/` |
 | **perf-dashboard** | Python Flask, React | Test plans (suites in S3: upload, edit), new runs, live metrics per worker, final numbers, logs, reports from S3, deleting runs and their results | `perf-dashboard/` |
@@ -80,6 +81,7 @@ flowchart LR
     subgraph sut["Systems under test"]
         apis["HTTP / REST APIs"]
         dbs[("Databases<br/>Oracle, PostgreSQL, ... via JDBC")]
+        flightsrv[("Arrow Flight servers<br/>e.g. labukDB")]
     end
 
     tester -->|"browser, HTTPS: test plans,<br/>runs, live view, reports"| ingress --> dashboard
@@ -97,6 +99,7 @@ flowchart LR
     validate & workers -.->|"or clone (CI / GitOps)"| git
     workers -->|"load"| apis
     workers -->|"load"| dbs
+    workers -->|"load (gRPC)"| flightsrv
     dashboard -->|"live metrics"| workers
     prom -.->|"scrape"| workers
     cli -->|"perf fetch"| minio
@@ -140,6 +143,10 @@ flowchart TB
             sql_plugins["SqlStepPlugin, JdbcDataSourcePlugin"]
             sql_exec["SqlAction, SqlExecutor, Pools (HikariCP)"]
         end
+        subgraph flight["gatling-flight (Scala)"]
+            fl_plugins["FlightStepPlugin, FlightDataSourcePlugin"]
+            fl_exec["FlightAction, FlightExecutor, FlightPools<br/>(Arrow Flight 16.1, gRPC 1.76)"]
+        end
         subgraph runner["gatling-runner (Scala)"]
             perf["Perf CLI<br/>incl. fetch --snapshot"]
             kube["Kube: submit / status"]
@@ -173,7 +180,9 @@ flowchart TB
     core --> gatling
     sql_plugins -.->|"implements"| core_plugin
     sql --> core
-    runner --> sql
+    fl_plugins -.->|"implements"| core_plugin
+    flight --> core
+    runner --> sql & flight
     perf --> core_cli & core_sim & core_metrics & s3 & kube & lr
     operator --> josdk
     op_flow --> op_jobs
@@ -199,11 +208,12 @@ flowchart TB
 | `core/cli` | `Validate`, `Merge` |
 | `core/plugin` | Extension points `StepPlugin`, `DataSourcePlugin` (Java `ServiceLoader`) |
 | `gatling-sql` | `SqlStepPlugin`, `JdbcDataSourcePlugin`, `SqlAction` (own thread pool), `SqlExecutor`, `Pools` |
+| `gatling-flight` | `FlightStepPlugin`, `FlightDataSourcePlugin`, `FlightAction` (own thread pool), `FlightExecutor` (plan, parallel DoGet, DoPut, Arrow value conversion), `FlightPools` |
 | `gatling-runner` | `Perf` (CLI; `fetch --snapshot` copies a test folder into the run folder), `Kube` (submit/status via kubectl), `S3` (SigV4 client), `lr.VuGenConverter`, `Facts` |
 | `loadtest-operator` | `LoadTest` CRD classes (plan sources `s3`, `git`, `configMap`, `inImage`), `LoadTestReconciler`, `LoadTestFlow` (state machine), `JobFactory` (Jobs, `fetch-tests` / `clone-tests` init containers) |
 | `perf-dashboard` | `routes/api.py` (runs, delete), `routes/plans.py` (suites), `routes/reports.py`; `kube.py`, `live.py`, `storage.py`, `plan_store.py`; React pages Runs, Run detail, New run, Test plans, History |
 
-Dependencies point one way: `gatling-runner → gatling-sql → gatling-api-core → Gatling`. The operator does not
+Dependencies point one way: `gatling-runner → gatling-sql / gatling-flight → gatling-api-core → Gatling`. The operator does not
 link the engine — it starts pods from the runner image. The dashboard talks to the Kubernetes API, the worker
 pods and S3, never to the engine directly.
 
@@ -270,7 +280,7 @@ flowchart LR
         inj["injection + throttle"]
         sla["SLAs -> Gatling assertions"]
     end
-    plugins["Plugins (ServiceLoader)<br/>sql step, jdbc data source"]
+    plugins["Plugins (ServiceLoader)<br/>sql + jdbc, flight + flight data source"]
 
     model --> split --> setupscn & chain & inj
     chain --> auth
@@ -283,10 +293,12 @@ flowchart LR
     subgraph runtime["Gatling runtime"]
         netty["HTTP over Netty<br/>(non-blocking)"]
         jdbc["SQL thread pool<br/>HikariCP per connection"]
+        flt["Flight thread pool<br/>gRPC channels per data source"]
     end
-    sim --> netty & jdbc
+    sim --> netty & jdbc & flt
     netty --> apis["APIs"]
     jdbc --> dbs[("Databases")]
+    flt --> flightsrv[("Arrow Flight servers<br/>e.g. labukDB")]
 ```
 
 <sub>Source: [`architecture/05-engine.mmd`](architecture/05-engine.mmd) · PlantUML: [`architecture/05-engine.puml`](architecture/05-engine.puml)</sub>
@@ -654,6 +666,8 @@ For routine clean-up prefer a bucket lifecycle rule (e.g. expire `runs/` after 9
 | Polling reconcile (5 s) | Simple, restart-safe; tests run for minutes | Up to 5 s latency between phases |
 | Own S3 client (SigV4) | Avoids the large AWS SDK; MinIO-friendly | Access keys only (no IRSA / web identity) |
 | SQL on its own thread pool | JDBC blocks | Accurate HTTP timings next to SQL load |
+| Flight on its own thread pool, plugin like SQL | Flight's Java client blocks; Flight is a protocol, not core | Accurate timings next to HTTP; nothing in the core knows about Arrow |
+| One Netty (4.1.115) and gRPC 1.76 for every module | Arrow Flight 16.1 brings gRPC 1.63 (built for Netty 4.1.100) and Netty 4.1.100/108; with Gatling's 4.1.115 its HTTP/2 streams broke. Arrow's Netty buffer patch is excluded (`arrow-memory-unsafe` instead) | Gatling keeps its own Netty; re-check the alignment when upgrading Gatling or Arrow |
 | Dockerfiles alongside Jib | Jib's hand-off to Docker Desktop stalled on the dev laptop | Both paths documented; Dockerfiles verified |
 | Test plans in S3, managed by the dashboard | Testers should not need Git or a push for every change; the bucket is already there | Git stays available to CI / GitOps through the operator |
 | Per-run copy of the tests, taken by the validate pod | A run must not change if a plan is edited while it runs; the run folder name (`<name>-<uid>`) only exists once the LoadTest is created, so the dashboard cannot copy reliably before the pods start | Every run folder shows exactly what ran; works for `perf submit` / kubectl runs too |
@@ -675,6 +689,8 @@ For routine clean-up prefer a bucket lifecycle rule (e.g. expire `runs/` after 9
 - The dashboard reads results from S3 only; runs with `results.pvc` show status and pods but no numbers.
 - Oracle-specific behaviour (REF CURSOR, PL/SQL OUT parameters) is implemented but not yet verified on a real
   Oracle database.
+- Flight: no `DoAction` / `DoExchange` and no Flight SQL commands yet; writes support the listed scalar types
+  (no nested lists / structs / decimals from YAML text other than plain numbers).
 
 ---
 

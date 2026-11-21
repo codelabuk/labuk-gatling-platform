@@ -1,0 +1,77 @@
+# Load test for a labukDB Arrow Flight server (https://github.com/codelabuk/labukDB).
+#   FLIGHT_URI      grpc://host:9443 (default: localhost)
+#   LABUKDB_TABLE   a Delta table partitioned by `level` with columns service, amount, event_time
+#                   (a table name registered in labukDB's catalog works too: replace tableRoot by table)
+name: labukdb-flight
+baseUrl: http://localhost:1          # no HTTP in this plan
+
+dataSources:
+  labukdb:
+    type: flight
+    uri: ${FLIGHT_URI:grpc://localhost:9443}
+    pool: { size: 16, connections: 4 }
+    timeout: 60s
+  levels: { file: data/levels.csv, strategy: circular }
+
+scenarios:
+  - name: readers
+    feeders: [ levels ]
+    steps:
+      # partition pruning: one level = its 3 files = 3 endpoints, fetched at once
+      - flight:
+          datasource: labukdb
+          name: scan-level
+          query:
+            tableRoot: "${LABUKDB_TABLE}"
+            predicate: { type: cmp, column: level, op: EQ, literal: "#{level}", literalType: string }
+          parallel: 3
+          phases: true
+          checks: [ { endpoints: ">= 3" }, { rows: ">= 3000" } ]     # WARN grows while writers add files
+          extract: { levelRows: { count: true } }
+      # server-side GROUP BY + ORDER BY: one combined endpoint
+      - flight:
+          datasource: labukdb
+          name: errors-by-service
+          query:
+            tableRoot: "${LABUKDB_TABLE}"
+            predicate: { type: cmp, column: level, op: EQ, literal: ERROR, literalType: string }
+            groupBy: [ service ]
+            aggregates:
+              - { function: COUNT, column: amount, outputName: cnt }
+              - { function: SUM, column: amount, outputName: total }
+            orderBy: [ { column: total, ascending: false } ]
+          checks: [ { endpoints: "== 1" }, { rows: "== 4" } ]
+          extract: { topService: { column: service } }
+      # projection + a filter on a data column
+      - flight:
+          datasource: labukdb
+          name: small-amounts
+          query:
+            tableRoot: "${LABUKDB_TABLE}"
+            columns: [ service, amount ]
+            predicate: { type: cmp, column: amount, op: LT, literal: 100, literalType: long }
+          checks: [ { rows: "== 100" } ]
+    load:
+      profile: [ { rampUsers: { users: 30, during: 10s } } ]
+
+  - name: writers
+    steps:
+      # DoPut: 50 rows per call in batches of 25; the partition column comes from partitionValues.
+      # The column types are given here: labukDB's GetSchema reports timestamp columns as Int64, while its
+      # writer needs a timestamp without time zone (timestampNtz).
+      - flight:
+          datasource: labukdb
+          name: put-warn
+          put: { tableRoot: "${LABUKDB_TABLE}", partitionValues: { level: WARN } }
+          schema: { service: string, amount: long, event_time: timestampNtz }
+          rows:
+            - { service: perf, amount: 1000000, event_time: "2026-11-22T12:00:00Z" }
+          times: 50
+          batchRows: 25
+          checks: [ { rows: "== 50" }, { batches: "== 2" } ]
+    load:
+      profile: [ { constantUsersPerSec: { rate: 2, during: 10s } } ]
+
+sla:
+  - api.scan-level.failed.percent == 0
+  - api.errors-by-service.responseTime.p95 < 5000ms

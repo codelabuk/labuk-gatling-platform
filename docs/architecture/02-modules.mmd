@@ -18,6 +18,10 @@ flowchart TB
             sql_plugins["SqlStepPlugin, JdbcDataSourcePlugin"]
             sql_exec["SqlAction, SqlExecutor, Pools (HikariCP)"]
         end
+        subgraph flight["gatling-flight (Scala)"]
+            fl_plugins["FlightStepPlugin, FlightDataSourcePlugin"]
+            fl_exec["FlightAction, FlightExecutor, FlightPools<br/>(Arrow Flight 16.1, gRPC 1.76)"]
+        end
         subgraph runner["gatling-runner (Scala)"]
             perf["Perf CLI<br/>incl. fetch --snapshot"]
             kube["Kube: submit / status"]
@@ -51,7 +55,9 @@ flowchart TB
     core --> gatling
     sql_plugins -.->|"implements"| core_plugin
     sql --> core
-    runner --> sql
+    fl_plugins -.->|"implements"| core_plugin
+    flight --> core
+    runner --> sql & flight
     perf --> core_cli & core_sim & core_metrics & s3 & kube & lr
     operator --> josdk
     op_flow --> op_jobs

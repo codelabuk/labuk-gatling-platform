@@ -10,6 +10,7 @@ variables and conditions all live in the YAML; the engine has no business logic 
 |---|---|---|
 | `gatling-api-core` | ✅ v1.1 | The engine: YAML loader + validation, HTTP, auth, data, flow control, load profiles, SLAs, distributed-run support (worker split, synchronised start, setup once, log merge) |
 | `gatling-sql` | ✅ v1 | `sql:` steps and `jdbc` data sources — any JDBC database (Oracle and PostgreSQL drivers included) |
+| `gatling-flight` | ✅ v1 (verified against labukDB, locally and on 2 Kubernetes workers) | `flight:` steps and `flight` data sources — Apache Arrow Flight reads (GetFlightInfo + DoGet) and writes (DoPut) |
 | `gatling-runner` | ✅ v1 | The `perf` command (zip for Windows/Linux/macOS) + the runner image the pods use — for developers and CI, no Maven needed |
 | `perf-dashboard` | ✅ v1 (verified on Docker Desktop Kubernetes) | Web UI: test plans kept in MinIO (upload, edit), new runs, live metrics per worker, final numbers, logs, reports from MinIO, deleting runs and results |
 | `loadtest-operator` | ✅ v1 (verified on minikube, installed with Helm) | Kubernetes operator (Java, JOSDK + fabric8): one `LoadTest` = validate → setup → N workers → merged report |
@@ -560,6 +561,71 @@ application would experience it.
 
 Other databases: add the driver as a dependency in `gatling-sql/pom.xml` (SQL Server, MySQL, DB2, ...) —
 no code change.
+
+---
+
+## Arrow Flight load testing (`gatling-flight`)
+
+`flight` steps call an **Apache Arrow Flight** server (gRPC): reads with `GetFlightInfo` + `DoGet`, writes with
+`DoPut`. Built for and verified against [labukDB](https://github.com/codelabuk/labukDB)'s Flight server; any Flight
+server whose commands are bytes (JSON, SQL text, …) works the same way.
+
+```yaml
+dataSources:
+  labukdb:
+    type: flight
+    uri: ${FLIGHT_URI:grpc://localhost:9443}   # grpc://, grpc+tls://, grpc+unix://
+    pool: { size: 16, connections: 4 }         # call threads (calls in flight at once), gRPC channels
+    timeout: 60s                               # per call
+    # headers: { authorization: "Bearer ${TOKEN}" }   verifyServer: false (self-signed TLS)
+
+scenarios:
+  - name: readers
+    steps:
+      - flight:
+          datasource: labukdb
+          name: scan-level
+          query:                                # the descriptor's command - a YAML object is sent as JSON
+            table: logs
+            predicate: { type: cmp, column: level, op: EQ, literal: "#{level}", literalType: string }
+          fetch: all                            # all | first | none (plan only) endpoints
+          parallel: 3                           # endpoints fetched at once
+          phases: true                          # also "scan-level (plan)" and "scan-level (first batch)"
+          checks: [ { endpoints: ">= 1" }, { rows: ">= 1" } ]     # rows | endpoints | batches | bytes
+          extract: { first: { column: amount }, all: { column: service, all: true }, n: { count: true } }
+
+  - name: writers
+    steps:
+      - flight:
+          datasource: labukdb
+          name: put-warn
+          put: { table: logs, partitionValues: { level: WARN } }   # the DoPut command
+          rows: [ { service: perf, amount: 1, event_time: "2026-11-22T12:00:00Z", id: "#{randomUuid()}" } ]
+          times: 50                             # repeat the rows (re-resolved: a new UUID each time)
+          batchRows: 25                         # rows per Arrow batch
+          schema: { service: string, amount: long, event_time: timestampNtz, id: string }   # optional, see below
+          checks: [ { rows: "== 50" }, { batches: "== 2" } ]
+```
+
+| | |
+|---|---|
+| Timings | The step is one request in the report (plan + all fetches, or the whole put until the server acknowledges). `phases: true` adds `(plan)` = GetFlightInfo and `(first batch)` = time to the first Arrow batch. SLAs work as for APIs: `api.scan-level.responseTime.p95 < 500ms` |
+| Endpoints | One `DoGet` per endpoint (labukDB: one per data file, or one combined endpoint for `groupBy` / `orderBy` / `limit`). Endpoints on another server are fetched from that server |
+| Writes | Rows come from the YAML (values may be `#{...}`) or a session variable holding a list of maps (`rows: "#{myRows}"`). Without `schema:`, the column types come from the server's `GetSchema` (by default for the put's `table` / `tableRoot`, or `schemaFrom:`), minus the `partitionValues` columns. Types: `string`, `long`, `int`, `short`, `byte`, `double`, `float`, `boolean`, `timestamp` (UTC), `timestampNtz` (no time zone), `date`; timestamps accept ISO-8601 text or epoch millis |
+| Threads | Flight's Java client blocks, so calls run on the data source's own threads (`pool.size`), never on Gatling's — HTTP timings in the same test stay accurate. `pool.size` limits how many calls are in flight at once |
+| Big results | Decoding Arrow costs CPU and memory on the load generator: for very large scans use `fetch: first`, `maxRows` (rows kept for extraction, default 1000) and enough workers |
+
+**labukDB notes** (found while testing it): `GetSchema` reports timestamp columns as `Int64`, while its Delta writer
+needs a timestamp **without** time zone — so for writes to tables with timestamps give `schema:` with
+`timestampNtz`. `DoPut` commits once per call (one new data file per put), so reads of that partition fetch more
+endpoints as writers run. Example plan: `gatling-flight/src/test/resources/plans/labukdb.yaml`.
+
+```bash
+FLIGHT_URI=grpc://localhost:9443 LABUKDB_TABLE=/data/perf_logs perf run plans/labukdb.yaml
+```
+
+The runner needs `--add-opens=java.base/java.nio=ALL-UNNAMED` for Arrow's off-heap memory; the `perf` launchers,
+the Dockerfile and the Jib image set it.
 
 ---
 
