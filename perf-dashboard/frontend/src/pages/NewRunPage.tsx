@@ -17,6 +17,7 @@ export function NewRunPage() {
   const [form, setForm] = useState({
     namespace: '', name: '', image: '', file: params.get('file') ?? '', suite: params.get('suite') ?? '',
     workers: '2', env: '', secrets: '', scenarios: '', cpu: '', memory: '1Gi', startDelaySeconds: '30', metrics: true,
+    spread: 'soft', reportMemory: '',
   })
   const set = (k: keyof typeof form) => (e: { target: { value: string } }) => setForm({ ...form, [k]: e.target.value })
   const suites = useQuery({ queryKey: ['suites'], queryFn: api.suites })
@@ -35,6 +36,8 @@ export function NewRunPage() {
       scenarios: parseList(form.scenarios),
       cpu: form.cpu || undefined,
       memory: form.memory || undefined,
+      spread: form.spread,
+      reportMemory: form.reportMemory || undefined,
       startDelaySeconds: Number(form.startDelaySeconds) || undefined,
       metrics: form.metrics,
     }),
@@ -82,6 +85,14 @@ export function NewRunPage() {
             <label>Start delay (s)<input type="number" min={5} value={form.startDelaySeconds} onChange={set('startDelaySeconds')} /></label>
             <label>Scenarios (empty = all)<input value={form.scenarios} onChange={set('scenarios')} placeholder="checkout, browse" /></label>
             <label className="check"><input type="checkbox" checked={form.metrics} onChange={(e) => setForm({ ...form, metrics: e.target.checked })} /> Live metrics</label>
+          </div>
+          <div className="row3">
+            <label>Spread workers over nodes<select value={form.spread} onChange={set('spread')}>
+              <option value="soft">soft — one per node where possible (default)</option>
+              <option value="hard">hard — at most one per node (extra workers wait)</option>
+              <option value="none">none — Kubernetes decides</option>
+            </select></label>
+            <label>Report memory<input value={form.reportMemory} onChange={set('reportMemory')} placeholder="e.g. 4Gi (large runs; empty = no limit)" /></label>
           </div>
         </fieldset>
 

@@ -744,6 +744,12 @@ image** (`inImage: true`, absolute `file`). Pods run as non-root; Jobs are owned
 deletes them) and are cleaned up `ttlSecondsAfterFinished` after finishing. Create a new LoadTest (new name)
 for every run — a finished one is never re-run.
 
+**Placement and sizing**: `spread: soft` (default) asks Kubernetes to put the workers on different nodes where it
+can and never blocks a run; `spread: hard` allows at most one worker per node (with fewer nodes than workers the
+extra workers stay Pending); `spread: none` leaves it to Kubernetes. `reportResources` sizes the report pod that
+merges the logs (large runs: more memory). Both are on the dashboard's *New run* form. Worker CPU / memory requests
+must fit the nodes' free capacity, or workers stay Pending ("Insufficient cpu").
+
 The operator uses leader election (a Lease in its namespace), so `replicaCount: 2` gives a standby. To run it
 from a laptop against a cluster during development: `KUBE_CONTEXT=<context> java -cp ... OperatorMain`.
 

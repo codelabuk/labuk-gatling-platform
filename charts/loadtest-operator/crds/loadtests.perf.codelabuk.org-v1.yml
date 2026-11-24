@@ -122,6 +122,36 @@ spec:
                 required:
                 - "file"
                 type: "object"
+              reportResources:
+                description: "CPU/memory for the report pod (merges the workers' logs,\
+                  \ builds the report); its JVM heap is 75% of the memory limit -\
+                  \ large runs need more (roughly 1 GB per 10 million requests on\
+                  \ top of 1 GB)"
+                properties:
+                  claims:
+                    items:
+                      properties:
+                        name:
+                          type: "string"
+                        request:
+                          type: "string"
+                      type: "object"
+                    type: "array"
+                  limits:
+                    additionalProperties:
+                      anyOf:
+                      - type: "integer"
+                      - type: "string"
+                      x-kubernetes-int-or-string: true
+                    type: "object"
+                  requests:
+                    additionalProperties:
+                      anyOf:
+                      - type: "integer"
+                      - type: "string"
+                      x-kubernetes-int-or-string: true
+                    type: "object"
+                type: "object"
               resources:
                 description: "CPU/memory for each worker; the JVM heap is 75% of the\
                   \ memory limit"
@@ -190,6 +220,12 @@ spec:
                 items:
                   type: "string"
                 type: "array"
+              spread:
+                description: "How worker pods are placed: soft (default) = one per\
+                  \ node where possible, never blocks; hard = at most one worker per\
+                  \ node (extra workers stay Pending when there are fewer nodes);\
+                  \ none = Kubernetes decides"
+                type: "string"
               startDelaySeconds:
                 description: "Seconds between creating the workers and their common\
                   \ start time (image pulls must fit in it)"

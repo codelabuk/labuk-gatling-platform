@@ -66,6 +66,18 @@ class MetricsSpec extends AnyFunSuite {
     assert(new String(Files.readAllBytes(f)).contains("\"requestsPerSecond\""))
   }
 
+  test("run summary reads the whole log in chunks: tiny chunks give exactly the same summary as one read") {
+    // a log bigger than one read chunk (16 MB in production) used to be summarised from its first chunk only
+    val whole = org.codelabuk.perf.metrics.RunSummary.fromLog(sample)
+    val chunked = org.codelabuk.perf.metrics.RunSummary.fromLog(sample, chunkBytes = 64) // ~70 reads of this 4 KB log
+    assert(Files.size(sample) > 64 * 10)
+    import scala.jdk.CollectionConverters._
+    val differs = whole.keySet.asScala.filter(k => whole.get(k) != chunked.get(k))
+    assert(differs.isEmpty, differs.map(k => s"$k: whole=${whole.get(k)} chunked=${chunked.get(k)}").mkString("; "))
+    val total = chunked.get("total").asInstanceOf[java.util.Map[String, Any]]
+    assert(total.get("count") == readAll().count(_.isInstanceOf[LogEvent.Request]).toLong)
+  }
+
   test("Prometheus output: totals match the log, histograms are cumulative") {
     val events = readAll()
     val m = new LiveMetrics("sr-email-status", "0")

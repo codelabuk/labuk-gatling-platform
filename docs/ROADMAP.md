@@ -18,6 +18,22 @@ gatling-api-core ──► gatling-sql ──┐
 | 6 | `perf-dashboard` (web UI) | ✅ v1 — verified on Docker Desktop Kubernetes: runs started from it, live per-worker metrics, final summaries, reports from MinIO; **test plans kept in MinIO** (upload, edit, run) and deleting runs / results | M |
 | 5 | Platform — live metrics, result storage | ✅ live metrics + Grafana dashboard; S3/MinIO results | S–M |
 
+### Status — 2026-11-25: worker spreading, report sizing, run summary fix
+
+- **Workers spread over nodes**: `spec.spread` soft (default, topology spread, never blocks) / hard (pod
+  anti-affinity, one per node) / none; on the dashboard's New run form. Verified on the 1-node cluster: hard kept the
+  2nd worker Pending ("didn't match pod anti-affinity rules"), soft ran both (Passed).
+- **Report pod resources**: `spec.reportResources` (dashboard: Report memory).
+- **Fixed: run summaries of logs over 16 MB covered only the first 16 MB** (`summary.json`, `worker-N.json`, the
+  dashboard's final numbers; the HTML report was right). `RunSummary` now reads the whole log in chunks and keeps
+  running t-digests per name instead of every response time - memory stays flat, numbers unchanged.
+- **Capacity test (`plans/capacity.yaml`, stepped arrival rate)** on Docker Desktop (4 CPUs, generator and mock on
+  the same machine): about 300-650 req/s sustained before arrivals outran responses (active users grew to ~60k,
+  p95 hit the 60 s timeout). The limit there is the shared laptop, not a clean per-worker number - repeat it on the
+  company cluster with the mock on other nodes.
+- Seen: a worker that cannot be scheduled (e.g. "Insufficient cpu") keeps the run in Running until its timeout - the
+  dashboard should show the pod's scheduling message (open).
+
 ### Status — 2026-11-22: Arrow Flight
 
 New module **`gatling-flight`**: `flight` steps — `query` (GetFlightInfo, then DoGet on all / the first / no endpoints,

@@ -72,6 +72,16 @@ def test_create_builds_a_valid_loadtest(client):
     assert spec["workers"] == 4 and spec["plan"] == {"file": "plans/orders.yaml", "s3": "s3://perf-results/test-plans/orders"}
     assert spec["results"]["s3"]["url"] == "s3://perf-results/runs" and spec["metrics"]["enabled"]
     assert spec["resources"]["limits"]["memory"] == "2Gi" and spec["env"] == {"BASE_URL": "https://sit"}
+    assert spec["spread"] == "soft" and "reportResources" not in spec      # defaults
+
+
+def test_create_with_spread_and_report_memory(client):
+    r = client.post("/api/loadtests", json={"plan": {"file": "p.yaml", "suite": "s"}, "spread": "hard", "reportMemory": "6Gi"})
+    assert r.status_code == 201
+    spec = client.created["body"]["spec"]
+    assert spec["spread"] == "hard" and spec["reportResources"]["limits"]["memory"] == "6Gi"
+    bad = client.post("/api/loadtests", json={"plan": {"file": "p.yaml", "suite": "s"}, "spread": "everywhere"})
+    assert bad.status_code == 400 and "spread" in bad.get_json()["error"]
 
 
 @pytest.mark.parametrize("body,error", [
