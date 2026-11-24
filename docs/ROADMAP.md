@@ -12,10 +12,51 @@ gatling-api-core ──► gatling-sql ──┐
 |---|---|---|---|
 | 1 | `gatling-api-core` v1.1 — hardening | ✅ done, incl. end-to-end test of every step type (`FeatureRunSpec`) | S–M |
 | 2 | `gatling-sql` | ✅ done incl. `batch` (verified on Derby; Oracle not yet tried on a real DB) | M |
+| 2b | `gatling-flight` | ✅ done (2026-11-22) — Arrow Flight reads / writes, verified against labukDB locally (170 requests, 0 KO, 20 DoPuts committed) and on 2 Kubernetes workers via the dashboard (Passed, 85 + 85) | M |
 | 3 | `gatling-runner` | ✅ done: `perf` incl. `submit`/`status`, `s3://` results (verified on MinIO), Dockerfile image (verified) | M |
 | 4 | `loadtest-operator` | ✅ done — **verified on a real cluster** (minikube, Helm-installed); S3 results, printer columns, leader election added after; tests from S3 suites with a per-run copy (`plan.s3`) | L |
 | 6 | `perf-dashboard` (web UI) | ✅ v1 — verified on Docker Desktop Kubernetes: runs started from it, live per-worker metrics, final summaries, reports from MinIO; **test plans kept in MinIO** (upload, edit, run) and deleting runs / results | M |
 | 5 | Platform — live metrics, result storage | ✅ live metrics + Grafana dashboard; S3/MinIO results | S–M |
+
+### Status — 2026-11-25: worker spreading, report sizing, run summary fix
+
+- **Workers spread over nodes**: `spec.spread` soft (default, topology spread, never blocks) / hard (pod
+  anti-affinity, one per node) / none; on the dashboard's New run form. Verified on the 1-node cluster: hard kept the
+  2nd worker Pending ("didn't match pod anti-affinity rules"), soft ran both (Passed).
+- **Report pod resources**: `spec.reportResources` (dashboard: Report memory).
+- **Fixed: run summaries of logs over 16 MB covered only the first 16 MB** (`summary.json`, `worker-N.json`, the
+  dashboard's final numbers; the HTML report was right). `RunSummary` now reads the whole log in chunks and keeps
+  running t-digests per name instead of every response time - memory stays flat, numbers unchanged.
+- **Capacity test (`plans/capacity.yaml`, stepped arrival rate)** on Docker Desktop (4 CPUs, generator and mock on
+  the same machine): about 300-650 req/s sustained before arrivals outran responses (active users grew to ~60k,
+  p95 hit the 60 s timeout). The limit there is the shared laptop, not a clean per-worker number - repeat it on the
+  company cluster with the mock on other nodes.
+- Seen: a worker that cannot be scheduled (e.g. "Insufficient cpu") keeps the run in Running until its timeout - the
+  dashboard should show the pod's scheduling message (open).
+
+### Status — 2026-11-22: Arrow Flight
+
+New module **`gatling-flight`**: `flight` steps — `query` (GetFlightInfo, then DoGet on all / the first / no endpoints,
+several in parallel; checks on rows / endpoints / batches / bytes; extract values, rows, counts) and `put` (DoPut of
+Arrow batches built from YAML or session rows; schema from the server's GetSchema or given). 13 tests incl. a real
+Gatling run against an in-process Flight server shaped like labukDB.
+
+Verified against **labukDB** (`labukdb-server-app`, Arrow Flight 16.1.0) with a Delta table created by labukDB's own
+library (9 files, 9,000 rows): partition scan with 3 endpoints in parallel, server-side GROUP BY / ORDER BY,
+projection + filter, concurrent DoPuts — `perf run`: 170 requests, 0 KO, SLAs passed, every put committed (one new
+file each); through the dashboard on 2 Kubernetes workers (pods → `host.docker.internal:9443`): Completed / Passed,
+170 requests (85 + 85), 0 KO.
+
+Found and fixed on the way:
+- **Arrow Flight 16.1 + Gatling's Netty broke HTTP/2 streams** (`http2 exception`, `end-of-stream mid-frame`): Flight
+  brings gRPC 1.63 (built for Netty 4.1.100) and Netty 4.1.100 / 4.1.108. Fixed in the parent pom: one Netty
+  (4.1.115, Gatling's) and gRPC 1.76 for every module; Arrow's Netty buffer patch excluded (`arrow-memory-unsafe`).
+  The runner distribution now ships exactly one Netty and one gRPC version.
+- **`perf validate` failed for plans with a connection-type data source** (`key not found` - a `flight` server, also
+  a `jdbc` connection): the split table now lists only data sources that feed rows.
+- **labukDB** (reported, not changed): `GetSchema` returns timestamp columns as `Int64`, while its Delta writer needs
+  `Timestamp(MICROSECOND)` without time zone — a client trusting GetSchema cannot write timestamps. Workaround in the
+  plan: `schema:` with the new `timestampNtz` type.
 
 ### Status — 2026-11-18
 

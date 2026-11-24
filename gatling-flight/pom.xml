@@ -1,0 +1,140 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.codelabuk</groupId>
+        <artifactId>labuk-gatling</artifactId>
+        <version>1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>gatling-flight</artifactId>
+    <name>gatling-flight</name>
+    <description>Apache Arrow Flight load testing for the YAML engine: `flight` steps (GetFlightInfo, DoGet, DoPut) and `flight` data sources.</description>
+
+    <properties>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <scala.version>2.13.15</scala.version>
+        <scala.binary.version>2.13</scala.binary.version>
+        <gatling-maven-plugin.version>4.12.2</gatling-maven-plugin.version>
+        <scala-maven-plugin.version>4.9.2</scala-maven-plugin.version>
+        <arrow.version>16.1.0</arrow.version>
+
+        <gatling.simulationClass>org.codelabuk.perf.sim.YamlSimulation</gatling.simulationClass>
+        <perf.heap>2g</perf.heap>
+    </properties>
+    <!-- Netty and gRPC versions are aligned in the parent pom (see there why) -->
+
+    <dependencies>
+        <dependency>
+            <groupId>org.codelabuk</groupId>
+            <artifactId>gatling-api-core</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.arrow</groupId>
+            <artifactId>flight-core</artifactId>
+            <version>${arrow.version}</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.apache.arrow</groupId>
+                    <artifactId>arrow-memory-netty</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <!-- Arrow's off-heap memory without its Netty buffer patch: arrow-memory-netty patches io.netty.buffer classes
+             built for Netty 4.1.108 and corrupted Flight streams (http2 errors) next to Gatling's Netty 4.1.115 -->
+        <dependency>
+            <groupId>org.apache.arrow</groupId>
+            <artifactId>arrow-memory-unsafe</artifactId>
+            <version>${arrow.version}</version>
+        </dependency>
+
+        <!-- tests: an in-process Flight server + the core's test helpers -->
+        <dependency>
+            <groupId>org.codelabuk</groupId>
+            <artifactId>gatling-api-core</artifactId>
+            <version>${project.version}</version>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.scalatest</groupId>
+            <artifactId>scalatest_${scala.binary.version}</artifactId>
+            <version>3.2.19</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <sourceDirectory>src/main/scala</sourceDirectory>
+        <testSourceDirectory>src/test/scala</testSourceDirectory>
+        <plugins>
+            <plugin>
+                <groupId>net.alchim31.maven</groupId>
+                <artifactId>scala-maven-plugin</artifactId>
+                <version>${scala-maven-plugin.version}</version>
+                <configuration>
+                    <scalaVersion>${scala.version}</scalaVersion>
+                    <args>
+                        <arg>-deprecation</arg>
+                        <arg>-feature</arg>
+                        <arg>-unchecked</arg>
+                    </args>
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>compile</goal>
+                            <goal>testCompile</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.5.2</version>
+                <configuration>
+                    <skipTests>true</skipTests>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.scalatest</groupId>
+                <artifactId>scalatest-maven-plugin</artifactId>
+                <version>2.2.0</version>
+                <configuration>
+                    <reportsDirectory>${project.build.directory}/surefire-reports</reportsDirectory>
+                    <junitxml>.</junitxml>
+                    <!-- Gatling (java.lang) and Arrow's off-heap memory (java.nio) need these on Java 17 -->
+                    <argLine>--add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED</argLine>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>test</id>
+                        <goals><goal>test</goal></goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <!-- plans that use `flight` steps run from this module (it has the core + the Flight plugin) -->
+            <plugin>
+                <groupId>io.gatling</groupId>
+                <artifactId>gatling-maven-plugin</artifactId>
+                <version>${gatling-maven-plugin.version}</version>
+                <configuration>
+                    <simulationClass>${gatling.simulationClass}</simulationClass>
+                    <jvmArgs>
+                        <jvmArg>-Xmx${perf.heap}</jvmArg>
+                        <jvmArg>--add-opens=java.base/java.nio=ALL-UNNAMED</jvmArg>
+                        <!-- no anonymous usage analytics; live metrics (-Dmetrics.port) follow this folder -->
+                        <jvmArg>-Dgatling.data.enableAnalytics=false</jvmArg>
+                        <jvmArg>-Dmetrics.results=${project.build.directory}/gatling</jvmArg>
+                    </jvmArgs>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

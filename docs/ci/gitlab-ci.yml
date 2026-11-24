@@ -16,7 +16,7 @@ variables:
     entrypoint: [""]
   before_script:
     # a function, not an alias: non-interactive shells ignore aliases
-    - perf() { java --add-opens=java.base/java.lang=ALL-UNNAMED -XX:MaxRAMPercentage=75 -Dlogback.configurationFile=/opt/perf/conf/logback.xml -cp "/opt/perf/lib/*:/opt/perf/drivers/*" org.codelabuk.perf.runner.Perf "$@"; }
+    - perf() { java --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED -XX:MaxRAMPercentage=75 -Dlogback.configurationFile=/opt/perf/conf/logback.xml -cp "/opt/perf/lib/*:/opt/perf/drivers/*" org.codelabuk.perf.runner.Perf "$@"; }
 
 validate:
   extends: .perf

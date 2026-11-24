@@ -70,6 +70,8 @@ public final class JobFactory {
         if (spec.plan.s3 != null && !usesS3(spec)) return "spec.plan.s3 needs results.s3 (its endpoint and credentials are used)";
         if (spec.plan.inImage && !spec.plan.file.startsWith("/")) return "spec.plan.file must be an absolute path when inImage is true";
         if (spec.workers < 1) return "spec.workers must be at least 1";
+        if (spec.spread != null && !List.of("soft", "hard", "none").contains(spec.spread))
+            return "spec.spread must be soft, hard or none - got '" + spec.spread + "'";
         boolean pvc = spec.results != null && spec.results.pvc != null && !spec.results.pvc.isBlank();
         if (pvc == usesS3(spec)) return "spec.results needs exactly one of: pvc, s3";
         if (usesS3(spec)) {
@@ -112,6 +114,7 @@ public final class JobFactory {
                 + (metrics ? spec.metrics.lingerSeconds : 0));
         Container perf = job.getSpec().getTemplate().getSpec().getContainers().get(0);
         perf.setResources(spec.resources);
+        spreadWorkers(lt, job.getSpec().getTemplate().getSpec());
         if (metrics) {
             perf.setPorts(List.of(new io.fabric8.kubernetes.api.model.ContainerPortBuilder()
                     .withName("metrics").withContainerPort(spec.metrics.port).build()));
@@ -125,8 +128,32 @@ public final class JobFactory {
     }
 
     public static Job report(LoadTest lt, String runDir) {
-        return job(lt, Role.report, List.of("report", "--input", runDir + "/logs", "--output", runDir + "/report",
+        Job job = job(lt, Role.report, List.of("report", "--input", runDir + "/logs", "--output", runDir + "/report",
                 "--name", "merged", "--facts-file", "/dev/termination-log"), Map.of(), 1);
+        job.getSpec().getTemplate().getSpec().getContainers().get(0).setResources(lt.getSpec().reportResources);
+        return job;
+    }
+
+    /**
+     * Places the workers of a run on different nodes, so one node's CPU / network / ports do not limit the whole test.
+     * soft: a topology spread constraint (max skew 1 per node, ScheduleAnyway) - best effort, never blocks a run;
+     * hard: required pod anti-affinity - at most one worker per node; none: nothing added.
+     */
+    static void spreadWorkers(LoadTest lt, io.fabric8.kubernetes.api.model.PodSpec pod) {
+        String mode = lt.getSpec().spread == null ? "soft" : lt.getSpec().spread;
+        io.fabric8.kubernetes.api.model.LabelSelector sameRun = new io.fabric8.kubernetes.api.model.LabelSelectorBuilder()
+                .addToMatchLabels(LABEL_LOADTEST, lt.getMetadata().getName())
+                .addToMatchLabels(LABEL_ROLE, Role.workers.name())
+                .build();
+        String node = "kubernetes.io/hostname";
+        switch (mode) {
+            case "soft" -> pod.setTopologySpreadConstraints(List.of(new io.fabric8.kubernetes.api.model.TopologySpreadConstraintBuilder()
+                    .withMaxSkew(1).withTopologyKey(node).withWhenUnsatisfiable("ScheduleAnyway").withLabelSelector(sameRun).build()));
+            case "hard" -> pod.setAffinity(new io.fabric8.kubernetes.api.model.AffinityBuilder().withNewPodAntiAffinity()
+                    .addNewRequiredDuringSchedulingIgnoredDuringExecution().withTopologyKey(node).withLabelSelector(sameRun).endRequiredDuringSchedulingIgnoredDuringExecution()
+                    .endPodAntiAffinity().build());
+            default -> { }
+        }
     }
 
     private static void scenarioArgs(LoadTestSpec spec, List<String> args) {

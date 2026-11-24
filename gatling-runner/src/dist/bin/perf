@@ -19,7 +19,7 @@ if command -v cygpath >/dev/null 2>&1; then   # Git Bash / Cygwin on Windows: Ja
 fi
 
 # shellcheck disable=SC2086
-exec "$JAVA" -Xmx"${PERF_HEAP:-2g}" --add-opens=java.base/java.lang=ALL-UNNAMED ${PERF_JAVA_OPTS:-} \
+exec "$JAVA" -Xmx"${PERF_HEAP:-2g}" --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED ${PERF_JAVA_OPTS:-} \
   "-Dlogback.configurationFile=$HOME_FOR_JAVA/conf/logback.xml" \
   -cp "$HOME_FOR_JAVA/lib/*${SEP}$HOME_FOR_JAVA/drivers/*" \
   org.codelabuk.perf.runner.Perf "$@"

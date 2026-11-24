@@ -20,6 +20,11 @@ package "gatling-sql (Scala)" as sql <<code>> {
   component "SqlAction, SqlExecutor\nPools (HikariCP)" as s_exec <<sut>>
 }
 
+package "gatling-flight (Scala)" as flight <<code>> {
+  component "FlightStepPlugin\nFlightDataSourcePlugin" as f_plugins <<code>>
+  component "FlightAction, FlightExecutor\nFlightPools (Arrow Flight 16.1, gRPC 1.76)" as f_exec <<sut>>
+}
+
 package "gatling-runner (Scala)" as runner <<code>> {
   component "Perf CLI\nincl. fetch --snapshot" as r_perf <<code>>
   component "Kube\nsubmit / status" as r_kube <<ctrl>>
@@ -66,7 +71,11 @@ core -[#7F8C8D,bold]-> gatling
 s_plugins ..|> c_plugin : implements
 s_plugins -[#6B4FBB]-> s_exec
 sql -[#6B4FBB,bold]-> core
+f_plugins ..|> c_plugin : implements
+f_plugins -[#6B4FBB]-> f_exec
+flight -[#6B4FBB,bold]-> core
 runner -[#6B4FBB,bold]-> sql
+runner -[#6B4FBB,bold]-> flight
 r_perf -[#6B4FBB]-> c_cli
 r_perf -[#6B4FBB]-> c_sim
 r_perf -[#6B4FBB]-> r_s3

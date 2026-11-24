@@ -51,6 +51,8 @@ object Validate {
     sb ++= s"  target: ${plan.baseUrl}\n"
     plan.setup.foreach(s => sb ++= s"  setup: ${s.steps.size} step(s), shares: ${s.share.map(_.name).mkString(", ")} (sizes known only at run time)\n")
 
+    // only data sources that feed rows to users (CSV, feeder queries) - not connections such as jdbc / flight servers
+    val dataNames = PlanData.sources(plan, Worker(0, workers)).keys.toList.sorted
     val perWorker = (0 until workers).map { i =>
       val w = Worker(i, workers)
       val sources = PlanData.sources(plan, w)
@@ -61,10 +63,9 @@ object Validate {
             .map(s => s"'${sc.name}' needs ~$arrivals but '${s.name}' has ${s.size}")
         }
       }
-      (i, load, plan.dataSources.keys.toList.sorted.map(n => sources(n).size), warnings)
+      (i, load, dataNames.map(n => sources(n).size), warnings)
     }
 
-    val dataNames = plan.dataSources.keys.toList.sorted
     val header = "worker" :: scenarios.map(s => s"scenario ${s.name}") ++ dataNames.map(d => s"data $d")
     val rows = perWorker.map { case (i, load, sizes, _) => s"${i + 1}/$workers" :: load ++ sizes.map(_.toString) }
     val widths = header.indices.map(c => (header :: rows.toList).map(r => r(c).length).max)

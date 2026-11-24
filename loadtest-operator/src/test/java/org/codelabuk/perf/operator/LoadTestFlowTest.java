@@ -280,6 +280,39 @@ class LoadTestFlowTest {
     }
 
     @Test
+    void workersAreSpreadAcrossNodesAndTheReportPodGetsItsOwnResources() {
+        LoadTest lt = loadTest("spread");
+        var soft = JobFactory.workers(lt, JobFactory.runDir(lt), "2026-11-20T10:01:00Z", false).getSpec().getTemplate().getSpec();
+        var c = soft.getTopologySpreadConstraints().get(0);
+        assertEquals("kubernetes.io/hostname", c.getTopologyKey());
+        assertEquals("ScheduleAnyway", c.getWhenUnsatisfiable());   // default: best effort, never blocks a run
+        assertEquals(1, c.getMaxSkew());
+        assertEquals(Map.of(JobFactory.LABEL_LOADTEST, "spread", JobFactory.LABEL_ROLE, "workers"), c.getLabelSelector().getMatchLabels());
+        assertNull(soft.getAffinity());
+
+        lt.getSpec().spread = "hard";
+        var hard = JobFactory.workers(lt, JobFactory.runDir(lt), "2026-11-20T10:01:00Z", false).getSpec().getTemplate().getSpec();
+        var term = hard.getAffinity().getPodAntiAffinity().getRequiredDuringSchedulingIgnoredDuringExecution().get(0);
+        assertEquals("kubernetes.io/hostname", term.getTopologyKey());
+        assertEquals("spread", term.getLabelSelector().getMatchLabels().get(JobFactory.LABEL_LOADTEST));
+        assertTrue(hard.getTopologySpreadConstraints() == null || hard.getTopologySpreadConstraints().isEmpty());
+
+        lt.getSpec().spread = "none";
+        var none = JobFactory.workers(lt, JobFactory.runDir(lt), "2026-11-20T10:01:00Z", false).getSpec().getTemplate().getSpec();
+        assertTrue((none.getTopologySpreadConstraints() == null || none.getTopologySpreadConstraints().isEmpty()) && none.getAffinity() == null);
+
+        // only workers are spread; the report pod has its own CPU / memory
+        lt.getSpec().reportResources = new io.fabric8.kubernetes.api.model.ResourceRequirementsBuilder()
+                .addToLimits("memory", new io.fabric8.kubernetes.api.model.Quantity("6Gi")).build();
+        var report = JobFactory.report(lt, JobFactory.runDir(lt)).getSpec().getTemplate().getSpec();
+        assertEquals("6Gi", report.getContainers().get(0).getResources().getLimits().get("memory").toString());
+        assertTrue(report.getTopologySpreadConstraints() == null || report.getTopologySpreadConstraints().isEmpty());
+
+        lt.getSpec().spread = "everywhere";
+        assertEquals("spec.spread must be soft, hard or none - got 'everywhere'", JobFactory.specProblem(lt.getSpec()));
+    }
+
+    @Test
     void testsFromS3AreFetchedWithTheRunnerImageAndResultCredentials() {
         LoadTest lt = loadTest("from-s3");
         LoadTestSpec spec = lt.getSpec();

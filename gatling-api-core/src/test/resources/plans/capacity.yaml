@@ -1,0 +1,25 @@
+# Capacity test for ONE load generator (worker): raises the request rate in steps until its CPU or the response
+# times say stop. Run it with 1 worker of the size you plan to use (e.g. 2 CPU / 4Gi) against a target that can take
+# more than the worker can send (several mock-api replicas), and watch the worker's CPU per step.
+#   BASE_URL   the mock API (default: local)
+name: capacity
+baseUrl: ${BASE_URL:http://localhost:18080}
+
+apis:
+  ping:
+    request: GET /ping
+    checks:
+      - status: 200
+
+scenarios:
+  - name: ping
+    steps:
+      - api: ping                      # one request per user: users/s = requests/s
+    load:
+      profile:
+        - incrementUsersPerSec:
+            by: ${STEP:250}
+            times: ${LEVELS:8}
+            eachLevelLasting: ${LEVEL_DURATION:20s}
+            separatedByRampsLasting: 5s
+            startingFrom: ${STEP:250}

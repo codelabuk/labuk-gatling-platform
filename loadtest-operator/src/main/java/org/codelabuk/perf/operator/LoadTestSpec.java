@@ -41,6 +41,14 @@ public class LoadTestSpec {
 
     public List<Toleration> tolerations = new ArrayList<>();
 
+    @JsonPropertyDescription("How worker pods are placed: soft (default) = one per node where possible, never blocks; "
+            + "hard = at most one worker per node (extra workers stay Pending when there are fewer nodes); none = Kubernetes decides")
+    public String spread = "soft";
+
+    @JsonPropertyDescription("CPU/memory for the report pod (merges the workers' logs, builds the report); its JVM heap is 75% of "
+            + "the memory limit - large runs need more (roughly 1 GB per 10 million requests on top of 1 GB)")
+    public ResourceRequirements reportResources;
+
     @Required
     @JsonPropertyDescription("Where results and the merged report are written")
     public Results results;

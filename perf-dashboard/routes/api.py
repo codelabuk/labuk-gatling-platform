@@ -175,6 +175,13 @@ def build_loadtest(body):
     res = {k: str(body[k]).strip() for k in ("cpu", "memory") if body.get(k)}
     if res:
         spec["resources"] = {"requests": dict(res), "limits": dict(res)}
+    spread = (body.get("spread") or "soft").strip()
+    if spread not in ("soft", "hard", "none"):
+        raise ValueError("spread must be soft, hard or none")
+    spec["spread"] = spread
+    if body.get("reportMemory"):
+        mem = str(body["reportMemory"]).strip()
+        spec["reportResources"] = {"requests": {"memory": mem}, "limits": {"memory": mem}}
     if body.get("startDelaySeconds"):
         spec["startDelaySeconds"] = max(5, int(body["startDelaySeconds"]))
     return ns, {"apiVersion": f"{kube.GROUP}/{kube.VERSION}", "kind": "LoadTest",

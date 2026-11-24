@@ -1,0 +1,57 @@
+# Arrow Flight load test against TestFlightServer (shaped like labukDB). FlightRunSpec checks the results.
+# Against a real labukDB: FLIGHT_URI=grpc://localhost:9443 and a registered `logs` table.
+name: flight
+baseUrl: http://localhost:1          # no HTTP in this plan
+
+dataSources:
+  labukdb:
+    type: flight
+    uri: ${FLIGHT_URI:grpc://localhost:47470}
+    pool: { size: 8, connections: 2 }
+    timeout: 30s
+  levels: { file: data/levels.csv, strategy: circular }
+
+scenarios:
+  - name: reads
+    feeders: [ levels ]
+    steps:
+      - flight:
+          datasource: labukdb
+          name: scan-by-level
+          query:
+            table: logs
+            predicate: { type: cmp, column: level, op: EQ, literal: "#{level}", literalType: string }
+          parallel: 3                  # the 3 endpoints (one per file) fetched at once
+          phases: true                 # also "scan-by-level (plan)" and "(first batch)"
+          checks: [ { endpoints: "== 3" }, { rows: "== 10" } ]
+          extract: { firstAmount: { column: amount }, n: { count: true } }
+      - flight:
+          datasource: labukdb
+          name: top-5
+          query: { table: logs, orderBy: [ { column: amount, ascending: false } ], limit: 5 }
+          checks: [ { endpoints: "== 1" }, { rows: "== 5" } ]
+      - flight:
+          datasource: labukdb
+          name: unknown-table          # fails on purpose: the error is the server's message
+          query: { table: nope }
+    load:
+      profile: [ { atOnceUsers: 6 } ]
+
+  - name: writes
+    steps:
+      - flight:
+          datasource: labukdb
+          name: put-errors
+          put: { table: logs, partitionValues: { level: ERROR } }
+          rows:
+            - { amount: 7, event_ts: "2026-11-22T10:00:00Z", message: "#{randomUuid()}" }
+            - { amount: 8, event_ts: 1795341600000, message: second }
+          times: 5                     # 10 rows per put
+          batchRows: 4                 # -> batches of 4, 4, 2
+          checks: [ { rows: "== 10" }, { batches: "== 3" } ]
+    load:
+      profile: [ { atOnceUsers: 4 } ]
+
+sla:
+  - api.scan-by-level.failed.percent == 0
+  - api.put-errors.responseTime.p95 < 5000ms

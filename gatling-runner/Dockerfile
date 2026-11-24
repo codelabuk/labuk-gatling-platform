@@ -11,7 +11,7 @@ WORKDIR /tmp
 USER 1000
 
 # heap from the container memory limit; extra JDBC drivers can be mounted in /opt/perf/drivers
-ENTRYPOINT ["java", "--add-opens=java.base/java.lang=ALL-UNNAMED", "-XX:MaxRAMPercentage=75", \
+ENTRYPOINT ["java", "--add-opens=java.base/java.lang=ALL-UNNAMED", "--add-opens=java.base/java.nio=ALL-UNNAMED", "-XX:MaxRAMPercentage=75", \
             "-Dlogback.configurationFile=/opt/perf/conf/logback.xml", \
             "-cp", "/opt/perf/lib/*:/opt/perf/drivers/*", "org.codelabuk.perf.runner.Perf"]
 CMD ["help"]

@@ -25,16 +25,18 @@ package "SimulationAssembler (per worker)" <<code>> {
   component "SLAs -> Gatling assertions" as sla <<code>>
 }
 
-interface "Plugins (ServiceLoader)\nsql step, jdbc data source" as plugins <<code>>
+interface "Plugins (ServiceLoader)\nsql + jdbc, flight + flight data source" as plugins <<code>>
 component "YamlSimulation" as sim <<ctrl>>
 
 package "Gatling runtime" <<run>> {
   component "HTTP over Netty\n(non-blocking)" as netty <<run>>
   component "SQL thread pool\nHikariCP per connection" as jdbc <<run>>
+  component "Flight thread pool\ngRPC channels per data source" as flt <<run>>
 }
 
 component "APIs" as apis <<sut>>
 database "Databases" as dbs <<sut>>
+database "Arrow Flight servers\ne.g. labukDB" as flightsrv <<sut>>
 
 ' conversion
 vugen -[#B59F3B]-> conv
@@ -68,6 +70,8 @@ sim -[#2E8B57,bold]-> netty
 sim -[#2E8B57,bold]-> jdbc
 netty -[#C0392B,bold]-> apis
 jdbc -[#C0392B,bold]-> dbs
+sim -[#2E8B57,bold]-> flt
+flt -[#C0392B,bold]-> flightsrv
 
 legend right
   <b>Stages</b>

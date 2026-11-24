@@ -22,7 +22,8 @@ object LogEvent {
  * Each [[poll]] returns the records completed since the last poll; a record cut off at the end of the file is left
  * for the next poll, so nothing is lost or read twice.
  */
-final class LiveLogReader(file: Path) extends AutoCloseable {
+/** @param chunkBytes most bytes read per poll (16 MB): a big log is read in several polls, see [[readAll]] */
+final class LiveLogReader(file: Path, chunkBytes: Int = 16 << 20) extends AutoCloseable {
 
   private val channel = FileChannel.open(file, StandardOpenOption.READ)
   private var pending = Array.emptyByteArray // bytes read but not yet parsed into complete records
@@ -34,7 +35,7 @@ final class LiveLogReader(file: Path) extends AutoCloseable {
 
   /** Parses whatever complete records are on disk now. */
   def poll(): Vector[LogEvent] = {
-    val fresh = ByteBuffer.allocate(math.max(0, (channel.size() - channel.position()).min(16L << 20).toInt))
+    val fresh = ByteBuffer.allocate(math.max(0, (channel.size() - channel.position()).min(chunkBytes.toLong).toInt))
     while (fresh.hasRemaining && channel.read(fresh) > 0) ()
     if (fresh.position() > 0) pending = pending ++ java.util.Arrays.copyOf(fresh.array(), fresh.position())
 
@@ -52,6 +53,18 @@ final class LiveLogReader(file: Path) extends AutoCloseable {
     }
     pending = java.util.Arrays.copyOfRange(pending, offset, pending.length)
     out.result()
+  }
+
+  /** Whether every byte on disk has been read (a record cut off at the end may still be pending). */
+  def atEnd: Boolean = channel.position() >= channel.size()
+
+  /** Reads a complete (finished) log chunk by chunk, handing each event to `f` - memory stays flat for any log size. */
+  def readAll(f: LogEvent => Unit): Unit = {
+    var events = poll()
+    while (events.nonEmpty || !atEnd) {
+      events.foreach(f)
+      events = poll()
+    }
   }
 
   override def close(): Unit = channel.close()
