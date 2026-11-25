@@ -780,6 +780,33 @@ helm upgrade --install perf-dashboard charts/perf-dashboard -n perf   --set resu
 kubectl -n perf port-forward svc/perf-dashboard 8080:80                # or --set ingress.enabled=true (host perf-dashboard.codelabuk.dev)
 ```
 
+### Without Kubernetes (local mode)
+
+The same dashboard runs on **one machine with only Java 17+ and Python 3.10+** — no Kubernetes, no Docker, no
+MinIO. Tests run as local `perf` processes (validate → setup → N workers → merged report, the same commands the
+operator's Jobs run); results and test plans live in a folder with the same layout as in MinIO.
+
+```bash
+cd perf-dashboard && python package_local.py          # -> build/perf-dashboard-local.zip (UI + backend + perf), ~72 MB
+# on the target machine: unzip, then
+start.cmd            # Windows   (./start.sh on Linux / macOS) -> http://127.0.0.1:5000, data in .\perf-data
+start.cmd --port 8080 --data D:\perf-data
+```
+
+The first start creates a Python environment and installs `requirements-local.txt` (or from `wheels/` with
+`package_local.py --with-wheels`, for machines without internet). From a checkout: `python local_main.py`.
+
+| | Local mode |
+|---|---|
+| Runs | each worker is a process (at most `LOCAL_MAX_WORKERS`, default 8); memory per worker sets its Java heap (75 %); live metrics from a port per worker |
+| Storage | `--data` folder: `perf-results/test-plans/<suite>/…` and `perf-results/runs/<run>/…` (tests copy, logs, report, summary) |
+| Not available | spreading over nodes, node selection, CPU limits, runner image (Kubernetes features); Git / ConfigMap plan sources |
+| Restart | stopping the dashboard stops the tests that are running (marked Failed on the next start); finished results stay |
+| Network | listens on 127.0.0.1 by default — `--host 0.0.0.0` lets other machines in (the dashboard has no login) |
+
+Use it to build and try test plans and for small / medium tests; one machine's CPU is shared by every worker, so big
+distributed tests belong on the Kubernetes dashboard.
+
 How the numbers work:
 - **live** (while Running): the dashboard scrapes each worker's `/metrics` (runs need `metrics.enabled`, on by
   default for runs started from the dashboard) and sums them; finished workers keep counting with their last

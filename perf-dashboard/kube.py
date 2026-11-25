@@ -90,3 +90,11 @@ def describe_pod(p):
         "exitCode": terminated.exit_code if terminated else None,
         "reason": (terminated.reason if terminated else None) or (perf.state.waiting.reason if perf and perf.state and perf.state.waiting else None),
     }
+
+
+def jobs(ns, name):
+    return [describe_job(j) for j in jobs_for(ns, name)]
+
+
+def pods(ns, name):
+    return [describe_pod(p) for p in pods_for(ns, name)]

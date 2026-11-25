@@ -257,6 +257,25 @@ Path safety: suite names are `[A-Za-z0-9][A-Za-z0-9._-]{0,62}`; file paths are p
 (no `..`, absolute paths, hidden files or empty segments); zip entries that point outside the suite reject the
 whole upload. Run folders must look like `<loadtest-name>-<uid8>` and sit under the results prefix.
 
+## Local mode (no Kubernetes, no Docker)
+
+Two drop-in backends behind the same API and UI (`EXECUTOR=local`, `STORAGE=folder`; `local_main.py` sets both):
+
+| Module | Replaces | How |
+|---|---|---|
+| `runs.py` | — | picks the run backend: `kube` (LoadTests, the operator) or `local_runs`; both offer list / get / create / delete, jobs, pods, pod logs with the same shapes |
+| `local_runs.py` | the operator + Jobs | one thread per run: copies the suite to `<run>/tests`, then `perf validate` (facts file), `perf setup`, N × `perf worker` (WORKER_INDEX, WORKER_COUNT, START_AT, RESULTS_DIR, a METRICS_PORT each), `perf report` — each a process, shown as a "pod"; state in `LOCAL_STATE_DIR/runs/*.json`, process logs next to it; stop = end the process tree |
+| `folder_store.py` | MinIO | answers the MinIO client calls (`list_objects`, `get_object`, `put_object`, `stat_object`, `remove_object(s)`) over `<STORAGE_DIR>/<bucket>/<key>`; keys cannot leave their bucket; empty folders are removed like S3 "folders" |
+| `local_main.py` | gunicorn + Helm | finds Java and the perf distribution, serves with waitress (works on Windows) on 127.0.0.1 |
+
+Packaging: `package_local.py` builds `build/perf-dashboard-local.zip` (backend, built UI, perf distribution,
+`requirements-local.txt` without the Kubernetes client, `start.cmd` / `start.sh`, optional `wheels/`).
+
+Tests: `test_folder_store.py` (S3 semantics, path safety, plans / summaries / reports / deletion on a folder) and
+`test_local_runs.py` (the real perf distribution: validate → setup → 2 workers → report against a small HTTP
+server, 3 + 3 split, run folder layout, report, logs, delete with results; invalid plan; worker limit; restart).
+Verified from the unzipped package started with `start.cmd`: 2 workers, 200 requests (100 + 100), 0 KO, Passed.
+
 ## Deployment
 - Image: multi-stage Dockerfile (Node build → Python slim + gunicorn, 1 worker process, 8 threads), plus Java 17
   and `/opt/perf` copied from the runner image (`--build-arg RUNNER_IMAGE=…`, default

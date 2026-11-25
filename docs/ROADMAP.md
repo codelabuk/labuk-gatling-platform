@@ -18,6 +18,14 @@ gatling-api-core ──► gatling-sql ──┐
 | 6 | `perf-dashboard` (web UI) | ✅ v1 — verified on Docker Desktop Kubernetes: runs started from it, live per-worker metrics, final summaries, reports from MinIO; **test plans kept in MinIO** (upload, edit, run) and deleting runs / results | M |
 | 5 | Platform — live metrics, result storage | ✅ live metrics + Grafana dashboard; S3/MinIO results | S–M |
 
+### Status — 2026-11-25: dashboard without Kubernetes (branch `feature/dashboard-local-mode`)
+
+The dashboard runs on one machine with only Java + Python: tests as local perf processes, results and plans in a
+folder, waitress instead of gunicorn (Windows). Same UI and API; Kubernetes mode unchanged behind a backend switch.
+`package_local.py` → `perf-dashboard-local.zip` (72 MB). Verified: 70 dashboard tests (incl. a real local run
+validate → setup → 2 workers → report) and the unzipped package started with `start.cmd` (2 workers, 200 requests,
+0 KO, Passed, live metrics from both processes).
+
 ### Status — 2026-11-25: worker spreading, report sizing, run summary fix
 
 - **Workers spread over nodes**: `spec.spread` soft (default, topology spread, never blocks) / hard (pod

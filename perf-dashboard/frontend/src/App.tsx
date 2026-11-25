@@ -1,4 +1,7 @@
+import { useQuery } from '@tanstack/react-query'
 import { NavLink, Route, Routes } from 'react-router-dom'
+
+import { api } from './api'
 
 import { HistoryPage } from './pages/HistoryPage'
 import { NewRunPage } from './pages/NewRunPage'
@@ -7,6 +10,7 @@ import { RunPage } from './pages/RunPage'
 import { RunsPage } from './pages/RunsPage'
 
 export function App() {
+  const cfg = useQuery({ queryKey: ['config'], queryFn: api.config })
   return (
     <div className="shell">
       <aside className="sidebar">
@@ -17,7 +21,7 @@ export function App() {
           <NavLink to="/plans">Test plans</NavLink>
           <NavLink to="/history">History</NavLink>
         </nav>
-        <div className="sidebar-foot">Gatling load tests on Kubernetes</div>
+        <div className="sidebar-foot">{cfg.data?.executor === 'local' ? 'Gatling load tests on this machine' : 'Gatling load tests on Kubernetes'}</div>
       </aside>
       <main>
         <Routes>
