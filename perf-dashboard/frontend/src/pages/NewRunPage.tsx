@@ -20,6 +20,7 @@ export function NewRunPage() {
     spread: 'soft', reportMemory: '',
   })
   const set = (k: keyof typeof form) => (e: { target: { value: string } }) => setForm({ ...form, [k]: e.target.value })
+  const local = cfg.data?.executor === 'local'   // runs as processes on the dashboard's machine
   const suites = useQuery({ queryKey: ['suites'], queryFn: api.suites })
   const suite = useQuery({ queryKey: ['suite', form.suite], queryFn: () => api.suite(form.suite), enabled: !!form.suite })
   const planFiles = (suite.data?.files ?? []).filter((f) => f.plan)
@@ -77,7 +78,7 @@ export function NewRunPage() {
         <fieldset>
           <legend>Load</legend>
           <div className="row3">
-            <label>Workers (pods)<input type="number" min={1} max={200} value={form.workers} onChange={set('workers')} /></label>
+            <label>{local ? 'Workers (processes)' : 'Workers (pods)'}<input type="number" min={1} max={local ? cfg.data?.localMaxWorkers ?? 8 : 200} value={form.workers} onChange={set('workers')} /></label>
             <label>CPU per worker<input value={form.cpu} onChange={set('cpu')} placeholder="e.g. 1 (empty = no limit)" /></label>
             <label>Memory per worker<input value={form.memory} onChange={set('memory')} /></label>
           </div>
@@ -86,14 +87,18 @@ export function NewRunPage() {
             <label>Scenarios (empty = all)<input value={form.scenarios} onChange={set('scenarios')} placeholder="checkout, browse" /></label>
             <label className="check"><input type="checkbox" checked={form.metrics} onChange={(e) => setForm({ ...form, metrics: e.target.checked })} /> Live metrics</label>
           </div>
-          <div className="row3">
+          {!local && <div className="row3">
             <label>Spread workers over nodes<select value={form.spread} onChange={set('spread')}>
               <option value="soft">soft — one per node where possible (default)</option>
               <option value="hard">hard — at most one per node (extra workers wait)</option>
               <option value="none">none — Kubernetes decides</option>
             </select></label>
             <label>Report memory<input value={form.reportMemory} onChange={set('reportMemory')} placeholder="e.g. 4Gi (large runs; empty = no limit)" /></label>
-          </div>
+          </div>}
+          {local && <p className="muted-text small">
+            Runs on this machine: each worker is a process (at most {cfg.data?.localMaxWorkers ?? 8}); memory per worker sets
+            its Java heap (75 %). CPU is shared by all of them - for big tests use the Kubernetes dashboard.
+          </p>}
         </fieldset>
 
         <fieldset>
@@ -105,11 +110,11 @@ export function NewRunPage() {
         <fieldset>
           <legend>Run</legend>
           <div className="row3">
-            <label>Namespace<select value={form.namespace} onChange={set('namespace')}>
+            {!local && <label>Namespace<select value={form.namespace} onChange={set('namespace')}>
               {(cfg.data?.namespaces ?? []).map((n) => <option key={n}>{n}</option>)}
-            </select></label>
+            </select></label>}
             <label>Name (optional)<input value={form.name} onChange={set('name')} placeholder="from the plan file + time" /></label>
-            <label>Runner image<input value={form.image} onChange={set('image')} placeholder={cfg.data?.defaults.image} /></label>
+            {!local && <label>Runner image<input value={form.image} onChange={set('image')} placeholder={cfg.data?.defaults.image} /></label>}
           </div>
           <p className="muted-text">Results go to {cfg.data?.resultsUrl ?? '…'}.</p>
         </fieldset>

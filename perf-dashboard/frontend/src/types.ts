@@ -88,6 +88,10 @@ export interface DashboardConfig {
   namespaces: string[]
   resultsUrl: string
   plansUrl: string
+  /** kubernetes: runs are LoadTests run by the operator; local: perf processes on the dashboard's machine */
+  executor?: 'kubernetes' | 'local'
+  storage?: 's3' | 'folder'
+  localMaxWorkers?: number
   defaults: { image: string; s3Secret: string; s3Endpoint: string }
 }
 

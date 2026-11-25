@@ -563,6 +563,7 @@ The main flows (test plans, LoadRunner import, start a run, live view, report, d
 | Deleting | `DELETE /api/loadtests/<ns>/<name>` removes the LoadTest (Jobs, pods); `?results=true` also removes its run folder. `DELETE /api/runs/<folder>` (History) removes a run folder. Both are refused (409) while the run is active |
 | Access to the cluster | A ClusterRole: LoadTests get/list/watch/create/delete, Jobs get/list, Pods and logs get/list |
 | Access to S3 | One credentials Secret: read/write/delete on `test-plans/`, read/delete on `runs/` |
+| Local mode | Without Kubernetes or Docker: runs become local `perf` processes (`local_runs.py`) and storage a folder (`folder_store.py`), behind the same API and UI; packaged as `perf-dashboard-local.zip` (Java + Python only) |
 
 ---
 

@@ -17,6 +17,9 @@ CACHE_SECONDS = 30
 
 def _minio():
     global _client
+    if _client is None and config.STORAGE == "folder":
+        from folder_store import FolderClient
+        _client = FolderClient(config.STORAGE_DIR)
     if _client is None:
         u = urlparse(config.S3_ENDPOINT if "://" in config.S3_ENDPOINT else "http://" + config.S3_ENDPOINT)
         _client = Minio(u.netloc, access_key=config.S3_ACCESS_KEY, secret_key=config.S3_SECRET_KEY,

@@ -37,6 +37,17 @@ METRICS_TIMEOUT_SECONDS = float(os.getenv("METRICS_TIMEOUT_SECONDS", "2"))
 # local development only: kubeconfig context (in the cluster the service account is used)
 KUBE_CONTEXT = os.getenv("KUBE_CONTEXT")
 
+# ---------------------------------------------------------------- without Kubernetes / S3 (local_main.py sets these)
+# EXECUTOR: kubernetes (LoadTest resources, the operator runs them) | local (perf processes on this machine)
+EXECUTOR = os.getenv("EXECUTOR", "kubernetes")
+# STORAGE: s3 (MinIO / S3) | folder (s3://bucket/key = <STORAGE_DIR>/bucket/key on this machine)
+STORAGE = os.getenv("STORAGE", "s3")
+STORAGE_DIR = os.getenv("STORAGE_DIR", os.path.join(os.getcwd(), "perf-data"))
+# local runs: their state and process logs, how many workers one run may start, first live-metrics port
+LOCAL_STATE_DIR = os.getenv("LOCAL_STATE_DIR", os.path.join(STORAGE_DIR, ".dashboard"))
+LOCAL_MAX_WORKERS = int(os.getenv("LOCAL_MAX_WORKERS", "8"))
+LOCAL_START_DELAY_MAX = int(os.getenv("LOCAL_START_DELAY_MAX", "10"))   # no image pulls locally - a few seconds suffice
+
 
 def _bucket_and_prefix(url):
     rest = url[len("s3://"):] if url.startswith("s3://") else url

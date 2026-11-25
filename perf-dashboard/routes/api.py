@@ -3,13 +3,18 @@ import re
 from datetime import datetime, timezone
 
 from flask import Blueprint, abort, jsonify, request
-from kubernetes.client.exceptions import ApiException
 
 import config
-import kube
 import live
 import plan_store
+import runs
 import storage
+from runs import RunError
+
+try:  # the kubernetes client is not needed (or installed) when runs are local
+    from kubernetes.client.exceptions import ApiException
+except ImportError:  # pragma: no cover
+    ApiException = None
 
 bp = Blueprint("api", __name__, url_prefix="/api")
 
@@ -22,9 +27,15 @@ def _watched(ns):
         abort(404, description=f"namespace {ns} is not watched by this dashboard")
 
 
-@bp.errorhandler(ApiException)
-def _k8s_error(e):
-    return jsonify(error=e.reason, status=e.status), e.status or 500
+if ApiException is not None:
+    @bp.errorhandler(ApiException)
+    def _k8s_error(e):
+        return jsonify(error=e.reason, status=e.status), e.status or 500
+
+
+@bp.errorhandler(RunError)
+def _run_error(e):
+    return jsonify(error=str(e)), e.status
 
 
 def _row(lt):
@@ -71,13 +82,16 @@ def get_config():
         "namespaces": config.WATCH_NAMESPACES,
         "resultsUrl": config.RESULTS_URL,
         "plansUrl": config.PLANS_URL,
+        "executor": config.EXECUTOR,
+        "storage": config.STORAGE,
+        "localMaxWorkers": config.LOCAL_MAX_WORKERS,
         "defaults": {"image": config.DEFAULT_IMAGE, "s3Secret": config.DEFAULT_S3_SECRET, "s3Endpoint": config.DEFAULT_RUN_S3_ENDPOINT},
     }
 
 
 @bp.get("/loadtests")
 def list_loadtests():
-    rows = [_row(lt) for lt in kube.list_loadtests(config.WATCH_NAMESPACES)]
+    rows = [_row(lt) for lt in runs.backend().list_loadtests(config.WATCH_NAMESPACES)]
     for r in rows:
         r["report"] = _report_key(r)
     rows.sort(key=lambda r: r["created"] or "", reverse=True)
@@ -87,12 +101,12 @@ def list_loadtests():
 @bp.get("/loadtests/<ns>/<name>")
 def get_loadtest(ns, name):
     _watched(ns)
-    lt = kube.get_loadtest(ns, name)
+    lt = runs.backend().get_loadtest(ns, name)
     row = _row(lt)
     row["report"] = _report_key(row)
     row["spec"] = lt.get("spec", {})
-    row["jobs"] = sorted((kube.describe_job(j) for j in kube.jobs_for(ns, name)), key=lambda j: j["start"] or "")
-    row["pods"] = sorted((kube.describe_pod(p) for p in kube.pods_for(ns, name)),
+    row["jobs"] = sorted(runs.backend().jobs(ns, name), key=lambda j: j["start"] or "")
+    row["pods"] = sorted(runs.backend().pods(ns, name),
                          key=lambda p: (p["role"] != "workers", p["worker"] if p["worker"] is not None else 0, p["name"]))
     return jsonify(row)
 
@@ -100,18 +114,18 @@ def get_loadtest(ns, name):
 @bp.get("/loadtests/<ns>/<name>/metrics")
 def get_metrics(ns, name):
     _watched(ns)
-    lt = kube.get_loadtest(ns, name)
+    lt = runs.backend().get_loadtest(ns, name)
     metrics = (lt.get("spec") or {}).get("metrics") or {}
     if not metrics.get("enabled"):
         return {"enabled": False, "workers": [], "unreachable": [], "total": None}
-    pods = [kube.describe_pod(p) for p in kube.pods_for(ns, name)]
+    pods = runs.backend().pods(ns, name)
     return {"enabled": True, **live.scrape(pods, metrics.get("port", 9464), run_key=f"{ns}/{name}")}
 
 
 @bp.get("/loadtests/<ns>/<name>/summary")
 def get_summary(ns, name):
     _watched(ns)
-    run_dir = ((kube.get_loadtest(ns, name).get("status") or {}).get("runDir")) or ""
+    run_dir = ((runs.backend().get_loadtest(ns, name).get("status") or {}).get("runDir")) or ""
     if not run_dir.startswith("s3://"):
         return {"available": False, "reason": "results are not in S3 (pvc results are not readable by the dashboard)"}
     return {"available": True, **storage.run_summary(run_dir)}
@@ -121,7 +135,7 @@ def get_summary(ns, name):
 def get_logs(ns, pod):
     _watched(ns)
     tail = min(max(int(request.args.get("tail", 500)), 10), 5000)
-    return {"pod": pod, "log": kube.pod_logs(ns, pod, tail)}
+    return {"pod": pod, "log": runs.backend().pod_logs(ns, pod, tail)}
 
 
 def build_loadtest(body):
@@ -184,7 +198,7 @@ def build_loadtest(body):
         spec["reportResources"] = {"requests": {"memory": mem}, "limits": {"memory": mem}}
     if body.get("startDelaySeconds"):
         spec["startDelaySeconds"] = max(5, int(body["startDelaySeconds"]))
-    return ns, {"apiVersion": f"{kube.GROUP}/{kube.VERSION}", "kind": "LoadTest",
+    return ns, {"apiVersion": f"{runs.GROUP}/{runs.VERSION}", "kind": "LoadTest",
                 "metadata": {"name": name, "namespace": ns}, "spec": spec}
 
 
@@ -194,7 +208,7 @@ def create_loadtest():
         ns, body = build_loadtest(request.get_json(force=True) or {})
     except ValueError as e:
         return jsonify(error=str(e)), 400
-    created = kube.create_loadtest(ns, body)
+    created = runs.backend().create_loadtest(ns, body)
     return jsonify(_row(created)), 201
 
 
@@ -214,13 +228,13 @@ def delete_loadtest(ns, name):
     _watched(ns)
     deleted = {"deleted": name}
     if request.args.get("results", "").lower() in ("1", "true", "yes"):
-        st = kube.get_loadtest(ns, name).get("status") or {}
+        st = runs.backend().get_loadtest(ns, name).get("status") or {}
         if (st.get("phase") or "Pending") not in TERMINAL:
             return jsonify(error="the run is still active - stop it first (Delete), then delete its results from History"), 409
         folder = _results_folder(st.get("runDir"))
         if folder:
             deleted["resultObjects"] = storage.delete_run(folder)   # results first: if this fails the run stays visible
-    kube.delete_loadtest(ns, name)
+    runs.backend().delete_loadtest(ns, name)
     return deleted
 
 
@@ -230,7 +244,7 @@ def delete_run(folder):
     if not _NAME.match(folder):
         abort(404)
     url = storage.run_folder_url(folder)
-    for lt in kube.list_loadtests(config.WATCH_NAMESPACES):
+    for lt in runs.backend().list_loadtests(config.WATCH_NAMESPACES):
         st = lt.get("status") or {}
         if st.get("runDir") == url and (st.get("phase") or "Pending") not in TERMINAL:
             return jsonify(error=f"run {lt['metadata']['name']} is still active - stop it first"), 409

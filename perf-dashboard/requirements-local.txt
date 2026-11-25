@@ -1,0 +1,6 @@
+# perf-dashboard on one machine (local_main.py): no Kubernetes client, no gunicorn (waitress runs on Windows too)
+flask==3.1.2
+requests==2.32.3
+minio==7.2.9
+pyyaml==6.0.3
+waitress==3.0.2

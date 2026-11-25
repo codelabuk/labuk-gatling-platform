@@ -120,7 +120,8 @@ def scrape(pods, port, run_key=None):
     """Scrape the running worker pods in parallel; unreachable ones are reported, not fatal."""
     def one(p):
         try:
-            r = requests.get(f"http://{p['podIP']}:{port}/metrics", timeout=config.METRICS_TIMEOUT_SECONDS)
+            # local runs give every worker its own port; pods all use the run's port
+            r = requests.get(f"http://{p['podIP']}:{p.get('metricsPort') or port}/metrics", timeout=config.METRICS_TIMEOUT_SECONDS)
             r.raise_for_status()
             return p, summarize(parse(r.text)), None
         except Exception as e:  # noqa: BLE001 - a slow/finished worker must not break the page
