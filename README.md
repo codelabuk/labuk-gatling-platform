@@ -1,155 +1,83 @@
 # labuk-gatling
 
-A YAML-driven performance testing framework on **open-source Gatling** — built to replace JMeter and
-LoadRunner for API (and soon SQL) load testing.
+YAML-driven performance testing on **open-source Gatling** — a replacement for JMeter and LoadRunner. Test HTTP /
+REST APIs (single calls, multi-API flows, polling), **SQL / PL-SQL** on any JDBC database, **Apache Arrow Flight**
+servers, and **converted LoadRunner scripts** — on one machine, or **distributed across many workers on
+Kubernetes**, with a web dashboard for testers.
 
-**Perf testers write YAML, not code.** One generic engine reads a test plan and runs it. API names,
-variables and conditions all live in the YAML; the engine has no business logic in it.
+**Testers write YAML, not code.** One generic engine reads a test plan and runs it; API names, variables and
+conditions live in the YAML, the engine has no business logic in it. No Gatling Enterprise licence is needed:
+distribution, merged results, live metrics and the UI are built here.
+
+## Contents
+
+- [What is in this repository](#what-is-in-this-repository) · [Who uses what](#who-uses-what) · [Getting started](#getting-started)
+- Writing tests: [Organising tests](#organising-tests) · [Writing a plan](#writing-a-plan) · [API catalog](#api-catalog) ·
+  [Steps](#steps) · [Data](#data) · [Authentication](#authentication) · [Load](#load) · [SLAs](#slas)
+- Protocols: [SQL](#sql-load-testing-gatling-sql) · [Arrow Flight](#arrow-flight-load-testing-gatling-flight) ·
+  [LoadRunner scripts](#loadrunner-scripts-perf-convert-lr)
+- Running: [Distributed runs — reference](#distributed-runs--reference) · [On Kubernetes](#on-kubernetes-loadtest-operator) ·
+  [perf-dashboard](#perf-dashboard-web-ui) · [The `perf` command](#the-perf-command-developers-and-ci)
+- [LoadRunner / JMeter → this framework](#loadrunner--jmeter--this-framework) · [Troubleshooting](#troubleshooting) ·
+  [For framework developers](#for-framework-developers) · [Further documents](#further-documents)
+
+---
+
+## What is in this repository
 
 | Module | Status | What it is |
 |---|---|---|
-| `gatling-api-core` | ✅ v1.1 | The engine: YAML loader + validation, HTTP, auth, data, flow control, load profiles, SLAs, distributed-run support (worker split, synchronised start, setup once, log merge) |
+| `gatling-api-core` | ✅ v1.1 | The engine: YAML loader + validation, HTTP, auth, data, flow control, load profiles, SLAs, distributed-run support (worker split, synchronised start, setup once, log merge, run summaries), live metrics |
 | `gatling-sql` | ✅ v1 | `sql:` steps and `jdbc` data sources — any JDBC database (Oracle and PostgreSQL drivers included) |
-| `gatling-flight` | ✅ v1 (verified against labukDB, locally and on 2 Kubernetes workers) | `flight:` steps and `flight` data sources — Apache Arrow Flight reads (GetFlightInfo + DoGet) and writes (DoPut) |
-| `gatling-runner` | ✅ v1 | The `perf` command (zip for Windows/Linux/macOS) + the runner image the pods use — for developers and CI, no Maven needed |
-| `perf-dashboard` | ✅ v1 (verified on Docker Desktop Kubernetes) | Web UI: test plans kept in MinIO (upload, edit), new runs, live metrics per worker, final numbers, logs, reports from MinIO, deleting runs and results |
-| `loadtest-operator` | ✅ v1 (verified on minikube, installed with Helm) | Kubernetes operator (Java, JOSDK + fabric8): one `LoadTest` = validate → setup → N workers → merged report |
+| `gatling-flight` | ✅ v1 | `flight:` steps and `flight` data sources — Apache Arrow Flight reads (GetFlightInfo + DoGet) and writes (DoPut); verified against labukDB |
+| `gatling-runner` | ✅ v1 | The `perf` command (zip for Windows / Linux / macOS), the LoadRunner converter, the S3 client and the runner image every pod uses |
+| `loadtest-operator` | ✅ v1 | Kubernetes operator (Java, JOSDK + fabric8): one `LoadTest` = validate → setup → N workers → merged report; spreads workers over nodes; Helm chart |
+| `perf-dashboard` | ✅ v1 | Web UI for testers: test plans, LoadRunner import, new runs, live metrics per worker, final numbers, logs, reports, history, clean-up — on Kubernetes (with MinIO) or **on one machine without Kubernetes or Docker** (local mode); Helm chart |
 
-Stack: Java 17, Maven 3.9, Scala 2.13.15, Gatling 3.13.1.
-
----
-
-## The `perf` command (developers and CI — no Maven)
-
-**Testers use the [perf-dashboard](#perf-dashboard-web-ui)** in the browser: test plans, runs, live view,
-reports — no tools to install. The `perf` command is for framework developers (debugging a plan locally,
-converting LoadRunner scripts with `perf convert-lr`) and for CI pipelines; it is also what runs inside every
-pod of a distributed run.
-
-Build once (framework team): `mvn install` → `gatling-runner/target/perf-1.0-SNAPSHOT.zip`.
-Unzip it anywhere; only Java 17+ is needed.
-
-```bash
-perf validate plans/orders.yaml --workers 4          # check a plan, see the per-worker split
-perf run      plans/orders.yaml -DBASE_URL=https://sit.api.example.com
-perf run      plans/orders.yaml --scenario checkout --results D:/perf-results
-```
-(Windows: `perf.cmd ...`; Git Bash works with `perf` too.)
-
-| Command | What it does |
-|---|---|
-| `perf validate <plan> [--workers N]` | Checks the plan without sending traffic; prints the split per worker |
-| `perf run <plan> [options] [-DNAME=value]` | Runs it on this machine; HTML report under `results/` |
-| `perf setup <plan> --out shared.json` | Runs only `setup` and saves its shared lists (distributed runs) |
-| `perf worker` | One worker of a distributed run; settings from env (`PLAN`, `WORKER_INDEX`/`JOB_COMPLETION_INDEX`, `WORKER_COUNT`, `START_AT`, `SHARED_IN`, `RESULTS_DIR`); writes `worker-<i>.log` |
-| `perf report --input <logs> [--output <dir>]` | Merges workers' logs → one report + SLA verdict |
-| `perf submit <plan> --workers N ...` | Starts a distributed run on Kubernetes (no LoadTest YAML to write) — see below |
-| `perf status <run> [-n ns] [--watch]` | Follows it; with `--watch` the exit code is the verdict |
-| `perf fetch <s3://folder> [<dir>] [--snapshot <s3://folder>]` | Downloads a report / logs / test folder from S3 or MinIO (keeps the folder structure); `--snapshot` also copies what was downloaded to another S3 folder (the operator uses it to freeze a run's tests) |
-| `perf convert-lr <VuGen script dir> [--out <dir>]` | Converts a LoadRunner web script to a YAML plan — see [LoadRunner scripts](#loadrunner-scripts-perf-convert-lr) |
-
-Options for `run` / `worker`: `--scenario a,b`, `--results <dir>`, `--workers N --worker-index i`,
-`--start-at <time>`, `--shared-in <file>`, `--no-reports`, `--description <text>`, `--metrics-port <port>`,
-`-DNAME=value`. Environment: `PERF_HEAP` (default `2g`), `PERF_JAVA_OPTS`, `JAVA_HOME`.
-**Exit codes:** `0` OK · `1` error or invalid plan · `2` SLAs failed — use them in CI
-(examples: `docs/ci/Jenkinsfile`, `docs/ci/gitlab-ci.yml`).
-
-**Results in S3 / MinIO** — every path option also takes `s3://bucket/prefix/...`:
-`perf setup --out s3://.../shared.json`, `SHARED_IN=s3://...`, `RESULTS_DIR=s3://.../logs`,
-`perf report --input s3://.../logs --output s3://.../report`. Credentials and endpoint come from the standard
-variables `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` (`AWS_SESSION_TOKEN`), `AWS_REGION`, and `S3_ENDPOINT`
-for MinIO (e.g. `http://minio.perf:9000`). Built-in client (no AWS SDK): access keys only — EKS IRSA /
-web-identity roles are not supported.
-
-The zip contains `bin/` (launchers), `lib/` (engine, Gatling, SQL support, Oracle + PostgreSQL drivers),
-`drivers/` (drop extra JDBC jars here) and `conf/logback.xml` (logging).
-
-**Docker image** — plain `docker build` (verified) or Jib (no Docker daemon needed, good for pushing from CI):
-```bash
-mvn -pl gatling-runner -am package
-docker build -t labuk-perf-runner:1.0-SNAPSHOT gatling-runner                     # Dockerfile path
-mvn -pl gatling-runner jib:build -Dimage=<registry>/labuk-perf-runner              # or Jib, straight to a registry
-docker run --rm -v "$PWD/perf-tests:/tests" labuk-perf-runner:1.0-SNAPSHOT run /tests/plans/orders.yaml
-```
-The image runs as a non-root user, sizes its heap from the container memory limit (75%), reads extra
-drivers from `/opt/perf/drivers/`, and writes worker results to `RESULTS_DIR` (default `/tmp/results` —
-mount a volume there, or use `s3://`). (On the dev laptop Jib's hand-off to Docker Desktop stalled, so the
-Dockerfiles are the tested local path.)
-
-**Live metrics** — `perf run plans/x.yaml --metrics-port 9464` (or `METRICS_PORT`; with Maven
-`-Dmetrics.port=9464`) serves Prometheus metrics on `http://<host>:9464/metrics` while the test runs:
-
-| Metric | Labels |
-|---|---|
-| `perf_requests_total` | `request` (incl. transaction path), `status` OK/KO — API calls, SQL steps, poll results |
-| `perf_response_time_ms` (histogram) | `request` — use `histogram_quantile(0.95, ...)` for p95 |
-| `perf_transactions_total`, `perf_transaction_duration_ms` | `transaction`, `status` |
-| `perf_users_active` (gauge), `perf_users_started_total` | `scenario` |
-| `perf_errors_total` | `message` (top 50) |
-
-Every series has `plan` and `worker` labels, so dashboards sum across workers. A Grafana dashboard is in
-`docs/grafana/perf-dashboard.json` (import it, pick the Prometheus data source).
-How it works: Gatling's open-source edition cannot stream metrics, so each worker follows its own
-`simulation.log` as it is written — the totals match the final report exactly. Gatling writes that log in
-chunks, so the numbers trail by ~1 s at hundreds of req/s and by up to ~20 s at a few req/s (`perf` halves the
-chunk to 4 KB when metrics are on; with Maven add `-Dgatling.data.file.bufferSize=4096`). After the load ends
-a worker keeps serving its final values for 15 s (`METRICS_LINGER_SECONDS`) so the last scrape sees them.
-On Kubernetes set `spec.metrics.enabled: true` in the LoadTest: worker pods get the port and
-`prometheus.io/scrape` annotations.
-
-Gatling's anonymous usage analytics are switched off in `perf` and in the Maven runs.
+Stack: Java 17, Maven 3.9, Scala 2.13.15, Gatling 3.13.1 (pinned), Arrow Flight 16.1, Java Operator SDK 5.1 on
+fabric8 7.3, Flask + React. Target platform: on-prem Kubernetes with MinIO / S3.
 
 ---
 
-## Quick start (framework developers, with Maven)
+## Who uses what
+
+| Who | Uses | For |
+|---|---|---|
+| **Perf tester / QA** | **perf-dashboard** in the browser | Test plans (upload, edit, import LoadRunner scripts), start runs, watch them live, open reports, history — no tools to install |
+| Framework developer | `perf` CLI, Maven | Debugging a plan locally, building images and charts, the LoadRunner converter from the command line |
+| CI pipeline / GitOps | `perf submit` / `perf status`, or a `LoadTest` in Git (Argo CD) | Scheduled or merge-request runs; the exit code is the SLA verdict |
+| Platform team | Helm charts | Install the operator and the dashboard; MinIO bucket and credentials |
+
+---
+
+## Getting started
+
+**A. Testers, on Kubernetes** (the dashboard is installed — see [On Kubernetes](#on-kubernetes-loadtest-operator)):
+
+1. Open the dashboard (e.g. `https://perf-dashboard.codelabuk.dev`).
+2. **Test plans** → *New suite* (starter plan), *Upload folder / zip*, or *Import LoadRunner script*. Edit the YAML in
+   the browser.
+3. **New run** → choose the suite and plan, the number of **workers** (pods), memory per worker, and the variables
+   (e.g. `BASE_URL=https://sit.api.example.com`) → *Start run*.
+4. **Run detail** shows the phases, live numbers per worker and pod logs; *Open report* when it is done. **History**
+   keeps every run.
+
+**B. One machine, no Kubernetes / Docker** — the same dashboard with only Java 17+ and Python 3.10+ (each worker is
+a process): from a checkout `cd perf-dashboard && start.cmd` (or `./start.sh`), or the
+`perf-dashboard-local.zip` package on another machine. Open http://127.0.0.1:5000.
+See [Without Kubernetes (local mode)](#without-kubernetes-local-mode).
+
+**C. Developers, the `perf` command:**
 
 ```bash
-# build + unit tests
-mvn -pl gatling-api-core test
-
-# demo: a sample plan against a built-in mock API (no network needed)
-mvn -pl gatling-api-core test-compile gatling:test -DskipTests \
-    -Dgatling.simulationClass=org.codelabuk.perf.it.MockedYamlSimulation
-
-# check a plan without running it (and see how it splits across 4 workers)
-mvn -pl gatling-api-core test-compile exec:exec@validate -Dperf.args="D:/perf-tests/plans/orders.yaml --workers 4"
-
-# run YOUR plan
-mvn -pl gatling-api-core test-compile gatling:test -DskipTests -Dplan=D:/perf-tests/plans/orders.yaml
-
-# what the Kubernetes operator will do (setup once, 2 workers, merged report), locally against the mock
-bash scripts/local-distributed-demo.sh
+mvn install -DskipTests                                     # builds everything; the zip: gatling-runner/target/perf-1.0-SNAPSHOT.zip
+perf validate plans/orders.yaml --workers 4                 # check a plan, see the per-worker split
+perf run plans/orders.yaml -DBASE_URL=https://sit.api.example.com
+bash scripts/local-distributed-demo.sh                      # a distributed run (setup once, 2 workers, merged report) on one machine
 ```
 
-The HTML report path is printed at the end of each run (`gatling-api-core/target/gatling/<run>/index.html`).
-The demo plan lives in [`gatling-api-core/src/test/resources/plans`](gatling-api-core/src/test/resources/plans) —
-it is the best place to start copying from.
-
-### Run options
-
-| Option | Meaning |
-|---|---|
-| `-Dplan=path.yaml` | **Required.** The plan to run. Relative paths resolve from where you run `mvn`. (env: `PLAN`) |
-| `-Dscenario=a,b` | Run only these scenarios of the plan. (env: `SCENARIO`) |
-| `-Dperf.heap=4g` | Load generator memory (default `2g`). Keep it to about half the machine's RAM. |
-| `-DNAME=value` | Fills `${NAME}` placeholders in the YAML — environments, secrets. Environment variables work too. |
-| `-Dworker.index=0 -Dworker.count=1` | Distributed runs — which slice of the load this JVM runs. (env: `WORKER_INDEX` / `JOB_COMPLETION_INDEX`, `WORKER_COUNT`) |
-| `-Dstart.at=...` | Wait until this moment before starting load — epoch millis or ISO-8601 (`2026-11-20T10:00:00Z`). (env: `START_AT`) |
-| `-Dmode=setup -Dshared.out=f.json` | Run only the plan's `setup` and write its shared lists to a file. (env: `MODE`, `SHARED_OUT`) |
-| `-Dshared.in=f.json` | Skip `setup`; take the shared lists from that file. (env: `SHARED_IN`) |
-
-One run = one plan. A plan can contain several scenarios that run in parallel.
-See [Distributed runs](#distributed-runs) for how the last four fit together.
-
-### Validating a plan
-
-```bash
-mvn -pl gatling-api-core test-compile exec:exec@validate -Dperf.args="plans/orders.yaml --workers 4 --scenario checkout"
-```
-
-Loads the plan exactly like a run would (includes, CSV files, `${...}` placeholders, conditions, SLA targets)
-without sending any traffic, then prints how users and data split across the workers and warns when a
-`queue` data source would run out. Exit code 0 = valid, 1 = invalid — use it in CI on every merge request.
+The sample plans in [`gatling-api-core/src/test/resources/plans`](gatling-api-core/src/test/resources/plans) run
+against a built-in mock API — the best place to start copying from.
 
 ---
 
@@ -457,6 +385,7 @@ machine). Rough guide:
   sticky sessions behave normally. Set `http.shareConnections: true` only for service-to-service APIs.
 - Windows limits outgoing ports (~16k by default); very high new-connection rates from one machine can run
   out — use more workers or longer keep-alive.
+- Bigger than one machine: [Sizing a distributed test](#sizing-a-distributed-test).
 
 ---
 
@@ -629,202 +558,6 @@ the Dockerfile and the Jib image set it.
 
 ---
 
-## Distributed runs
-
-One machine runs thousands of virtual users, but bigger tests run the same plan on several workers
-(pods, later started by the Kubernetes operator). Every load number in a plan is a **total**; each worker
-runs its share. The steps below are what the operator automates — `scripts/local-distributed-demo.sh` runs
-them on one machine against the mock API.
-
-1. **Setup once** — `-Dmode=setup -Dshared.out=shared.json` runs only the plan's `setup` and writes its
-   shared lists to a file.
-2. **Workers** — each gets `-Dworker.index=i -Dworker.count=N -Dshared.in=shared.json -Dstart.at=<same time>`:
-   - users, rates and `throttle` targets are divided by N;
-   - CSV rows and shared lists are split so no two workers get the same item (lists are sorted first, so
-     every worker splits an identical list);
-   - all workers wait for `start.at`, so the load ramps up together.
-3. **Merge** — collect every worker's `simulation.log` into one folder, then
-   `mvn -pl gatling-api-core exec:exec@merge -Dperf.args="--input <folder> --output <results-folder>"`
-   builds **one** HTML report and evaluates the SLAs on all the data. Exit code 0 = SLAs met, 2 = failed.
-
-A worker's own SLA printout covers its slice only and is informational — run workers with
-`-Dgatling.failOnError=false`; the merged result decides.
-
-Good to know:
-- `rendezvous: 50` waits for 50 users **per worker** (each worker waits for its share).
-- Small `throttle` targets split badly — 3 rps over 10 workers becomes 1 rps each (a warning is printed).
-- Without `shared.in`, each worker runs `setup` itself; that still works (lists are sorted before
-  splitting) but calls the setup APIs N times.
-- Log merging is tied to Gatling's log format; it is supported for the pinned Gatling 3.13.1 and refuses
-  logs from other versions.
-
----
-
-## On Kubernetes (`loadtest-operator`)
-
-The operator automates the distributed steps above. Install once, with **Helm** (recommended):
-
-```bash
-mvn install                                                     # builds everything; refreshes the chart's CRD
-mvn -pl gatling-runner jib:build -Dimage=registry.example.com/perf/labuk-perf-runner          # push the runner
-mvn -pl loadtest-operator jib:build -Dimage=registry.example.com/perf/labuk-loadtest-operator # push the operator
-helm upgrade --install loadtest-operator charts/loadtest-operator -n perf-system --create-namespace \
-  --set image.repository=registry.example.com/perf/labuk-loadtest-operator --set image.tag=1.0-SNAPSHOT
-```
-
-Chart values (`charts/loadtest-operator/values.yaml`): `image.*`, `imagePullSecrets`, `resources`, `logLevel`,
-`nodeSelector` / `tolerations` / `affinity`, `serviceAccount.*`, `rbac.create`, pod/container security
-contexts (non-root, read-only root filesystem by default). Helm installs the CRD on first install but never
-upgrades it — after an upgrade that changes the CRD run `kubectl apply -f charts/loadtest-operator/crds/`.
-Plain manifests (no Helm) are in `loadtest-operator/deploy/operator.yaml`.
-
-**End-to-end test on Docker Desktop's Kubernetes** (results in the cluster's MinIO): `bash scripts/docker-desktop-e2e.sh`
-— operator with 2 replicas (leader election), a 3-worker run, `perf status --watch`, then `perf fetch` of the
-report. Verified: Completed / Passed, one operator replica held the Lease and created all Jobs.
-
-**End-to-end test on minikube:** `bash scripts/minikube-e2e.sh` builds the three images (runner, operator,
-mock API) with `docker build`, loads them into minikube, installs the operator with Helm, runs a 2-worker
-LoadTest against the in-cluster mock and copies the merged report to `loadtest-operator/target/e2e/`.
-It only uses `--context minikube`. Verified: Validating → Setup → Running → Aggregating → Completed (Passed).
-
-Then each test run is one resource (full example: `loadtest-operator/deploy/example-loadtest.yaml`):
-
-```yaml
-apiVersion: perf.codelabuk.org/v1alpha1
-kind: LoadTest
-metadata: { name: orders-peak-0412, namespace: perf }
-spec:
-  image: registry.example.com/labuk-perf-runner:1.0.0
-  plan:
-    git: { repo: https://git.example.com/qa/perf-tests.git, ref: main, tokenSecret: { name: git-creds } }
-    file: plans/orders-peak.yaml
-  workers: 5
-  env: { BASE_URL: https://sit.api.example.com }
-  secretRefs: [ perf-secrets ]                 # passwords/tokens as ${...} values
-  resources: { limits: { cpu: "2", memory: 4Gi } }
-  results: { pvc: perf-results }               # existing claim; ReadWriteMany on multi-node clusters
-  # or, no shared volume needed:
-  # results: { s3: { url: s3://perf-results/runs, endpoint: http://minio.perf:9000, credentialsSecret: minio-creds } }
-  # metrics: { enabled: true }                 # live Prometheus metrics + scrape annotations on workers
-```
-
-Or let `perf` write it (developers / CI — needs `kubectl` access; testers use the dashboard instead):
-
-```bash
-export PERF_IMAGE=registry.example.com/labuk-perf-runner:1.0.0 PERF_PVC=perf-results PERF_NAMESPACE=perf
-perf submit plans/orders-peak.yaml --workers 5 --git-repo https://git.example.com/qa/perf-tests.git \
-     --git-ref main --env BASE_URL=https://sit.api.example.com --secret perf-secrets --memory 4Gi
-perf submit plans/sr.yaml --from-dir ./perf-tests --workers 2      # local folder -> ConfigMap (flat, 1 MB)
-perf submit ... --s3 s3://perf-results/runs --s3-secret minio-creds --s3-endpoint http://minio.minio.svc:9000
-                                                                    # results in MinIO instead of --pvc
-perf submit ... --dry-run                                           # print the LoadTest instead
-perf status orders-peak-20261120-100000 --watch                     # exit 0 Passed, 2 SLAFailed, 1 Failed
-```
-
-```bash
-kubectl get loadtests -n perf -w     # NAME  PHASE  RESULT  WORKERS  DONE  AGE   (-o wide adds FAILED, MESSAGE)
-kubectl get lt orders-peak-0412 -n perf -o jsonpath='{.status.result} {.status.reportPath} {.status.message}'
-```
-
-What happens:
-
-| Phase | Kubernetes Job | Notes |
-|---|---|---|
-| Validating | `<name>-validate` runs `perf validate` | A bad plan fails here with the exact YAML error in `status.message` |
-| Setup | `<name>-setup` runs `perf setup` | Only if the plan has `setup.share`; runs once |
-| Running | `<name>-workers` — an Indexed Job with N pods | All start at `status.startAt` (now + `startDelaySeconds`); no retries, a crashed worker fails the run |
-| Aggregating | `<name>-report` runs `perf report` | Merged report on the results volume; `status.result` = `Passed` / `SLAFailed` |
-
-Tests come from **S3 / MinIO** (`plan.s3: s3://perf-results/test-plans/<suite>` — the suites the dashboard's
-*Test plans* page manages; uses the endpoint and credentials of `results.s3`. The validate pod copies the suite into
-`<run folder>/tests` and every later pod reads that copy, so editing a plan never changes a running test and the run
-folder shows exactly what ran), **Git** (fetched by an init container; `ref` may be a branch, tag or **commit SHA** to pin a
-run to an exact version; token from a Secret), a **ConfigMap** (small flat test sets, 1 MB limit) or **the
-image** (`inImage: true`, absolute `file`). Pods run as non-root; Jobs are owned by the LoadTest (deleting it
-deletes them) and are cleaned up `ttlSecondsAfterFinished` after finishing. Create a new LoadTest (new name)
-for every run — a finished one is never re-run.
-
-**Placement and sizing**: `spread: soft` (default) asks Kubernetes to put the workers on different nodes where it
-can and never blocks a run; `spread: hard` allows at most one worker per node (with fewer nodes than workers the
-extra workers stay Pending); `spread: none` leaves it to Kubernetes. `reportResources` sizes the report pod that
-merges the logs (large runs: more memory). Both are on the dashboard's *New run* form. Worker CPU / memory requests
-must fit the nodes' free capacity, or workers stay Pending ("Insufficient cpu").
-
-The operator uses leader election (a Lease in its namespace), so `replicaCount: 2` gives a standby. To run it
-from a laptop against a cluster during development: `KUBE_CONTEXT=<context> java -cp ... OperatorMain`.
-
----
-
-## perf-dashboard (web UI)
-
-Like Spark's UI + history server, for load tests: every run, its phases, **live metrics per worker** while it
-runs, the final numbers, pod logs, and the Gatling HTML report opened straight from S3/MinIO. Design:
-[docs/perf-dashboard-design.md](docs/perf-dashboard-design.md). Code: `perf-dashboard/` (Flask + React, same stack
-as the spark-dashboard).
-
-| Page | Shows |
-|---|---|
-| Runs | every LoadTest: phase, result, workers done/total, start, duration, report link |
-| Run detail | steps (validate → setup → workers → report), cards (requests, errors %, req/s, p95, users, SLAs), live throughput + users charts, per-request and per-transaction tables, errors, **workers table** (pod, node, state, restarts, requests, live users / p95, log viewer), the LoadTest spec, Stop & delete |
-| New run | form → LoadTest from a saved test plan (workers, CPU/memory, env, secrets, start delay, live metrics). Git and ConfigMap sources are for `perf submit`, CI and GitOps, not the dashboard |
-| Test plans | suites of test files in S3 (`s3://perf-results/test-plans/<suite>/`): create (with a starter plan), upload files, a folder or a zip (folders kept), **import a LoadRunner VuGen script** (converted to a new suite, notes shown), edit YAML/CSV in the browser (YAML syntax checked on save), delete, download as zip, start a run from a plan |
-| History | every run folder in the results bucket with its final numbers and report link; **Delete** removes the run's folder from S3 (refused while its run is active) |
-
-Deleting from *Run detail* removes the LoadTest (Jobs, pods); its results stay in S3 unless *also delete results in
-S3* is ticked. Deleting results cannot be undone — for routine clean-up prefer a bucket lifecycle rule (e.g. expire
-`runs/` after 90 days). The dashboard's S3 credentials need write and delete rights on `test-plans/` and `runs/`.
-
-```bash
-docker build -t labuk-perf-dashboard:1.0.0 perf-dashboard            # build the runner image first (Java + converter come from it)
-helm upgrade --install perf-dashboard charts/perf-dashboard -n perf   --set results.url=s3://perf-results/runs --set results.s3Endpoint=http://minio.minio.svc:9000   --set results.credentialsSecret=minio-creds                          # Secret with AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
-kubectl -n perf port-forward svc/perf-dashboard 8080:80                # or --set ingress.enabled=true (host perf-dashboard.codelabuk.dev)
-```
-
-### Without Kubernetes (local mode)
-
-The same dashboard runs on **one machine with only Java 17+ and Python 3.10+** — no Kubernetes, no Docker, no
-MinIO. Tests run as local `perf` processes (validate → setup → N workers → merged report, the same commands the
-operator's Jobs run); results and test plans live in a folder with the same layout as in MinIO.
-
-```bash
-cd perf-dashboard && python package_local.py          # -> build/perf-dashboard-local.zip (UI + backend + perf), ~72 MB
-# on the target machine: unzip, then
-start.cmd            # Windows   (./start.sh on Linux / macOS) -> http://127.0.0.1:5000, data in .\perf-data
-start.cmd --port 8080 --data D:\perf-data
-```
-
-The first start creates a Python environment and installs `requirements-local.txt` (or from `wheels/` with
-`package_local.py --with-wheels`, for machines without internet). From a checkout: `python local_main.py`.
-
-| | Local mode |
-|---|---|
-| Runs | each worker is a process (at most `LOCAL_MAX_WORKERS`, default 8); memory per worker sets its Java heap (75 %); live metrics from a port per worker |
-| Storage | `--data` folder: `perf-results/test-plans/<suite>/…` and `perf-results/runs/<run>/…` (tests copy, logs, report, summary) |
-| Not available | spreading over nodes, node selection, CPU limits, runner image (Kubernetes features); Git / ConfigMap plan sources |
-| Restart | stopping the dashboard stops the tests that are running (marked Failed on the next start); finished results stay |
-| Network | listens on 127.0.0.1 by default — `--host 0.0.0.0` lets other machines in (the dashboard has no login) |
-
-Use it to build and try test plans and for small / medium tests; one machine's CPU is shared by every worker, so big
-distributed tests belong on the Kubernetes dashboard.
-
-How the numbers work:
-- **live** (while Running): the dashboard scrapes each worker's `/metrics` (runs need `metrics.enabled`, on by
-  default for runs started from the dashboard) and sums them; finished workers keep counting with their last
-  numbers, so totals never go down. p95 here is an estimate from histogram buckets. Small tests update in steps
-  (Gatling writes its log in chunks).
-- **final** (Completed): `perf worker` writes `logs/worker-<i>.json` and `perf report` writes
-  `report/summary.json` next to the report; the dashboard reads those. Percentiles are computed exactly like
-  Gatling's report (same t-digest), so the dashboard and the HTML report show the same numbers.
-
-Limits (v1): results must be in S3/MinIO (PVC results show status and pods only); no login — keep it behind your
-ingress/network rules; runs older than this feature have no summary in History.
-
-Developing it: `cd perf-dashboard && python -m venv .venv && .venv/Scripts/pip install -r requirements.txt pytest`
-then `python -m pytest tests`; UI: `cd frontend && npm install && npm run dev` (proxies `/api` to a local
-`python app.py` with `KUBE_CONTEXT=...`).
-
----
-
 ## LoadRunner scripts (`perf convert-lr`)
 
 **Testers:** dashboard → *Test plans* → **Import LoadRunner script**: choose the VuGen folder or a zip of it, give
@@ -864,6 +597,391 @@ It is not a comparison against LoadRunner's own numbers - for that, run the same
 
 ---
 
+## Distributed runs — reference
+
+One machine runs thousands of virtual users; bigger tests run **the same plan on several workers at once** — pods on
+Kubernetes, or processes on one machine. Nothing in the plan changes: every load number in it is a **total**.
+
+```
+            ┌────────────┐   ┌─────────────┐   ┌────────── workers (in parallel) ─────────┐   ┌──────────────┐
+ plan ───►  │  validate  │─► │ setup (once)│─► │ worker 0 │ worker 1 │ ... │ worker N-1     │─► │ report       │
+            │ (split ok?)│   │ shared lists│   │ all start at START_AT, each 1/N of the load │   │ merge → one  │
+            └────────────┘   └─────────────┘   └─────────────────────────────────────────────┘   │ report + SLAs│
+                                                                                                └──────────────┘
+```
+
+### How the load and the data are split
+
+| What | How it is split | Largest difference between workers |
+|---|---|---|
+| Users (`atOnceUsers`, `rampUsers`, `constantConcurrentUsers`, …) | `total / N`; the remainder goes to the first workers | 1 user |
+| Rates (`constantUsersPerSec`, `rampUsersPerSec`, …) | divided exactly (5/s on 3 workers = 1.67/s each) | none |
+| `throttle` targets | divided, whole requests/s per worker (minimum 1 each — a warning is printed) | rounding |
+| CSV rows, `jdbc` feeder rows, setup's shared lists | **round-robin**: worker *i* takes rows *i*, *i+N*, *i+2N*, … — no two workers use the same login / item, and a sorted list cannot put all "expensive" items on one worker | 1 row |
+| `rendezvous: 50` | waits for 50 users **per worker** | — |
+
+`splitAcrossWorkers: false` on a data source gives every worker all its rows. Shared lists are sorted before splitting,
+so every worker splits an identical list.
+
+**Not like Spark — no rebalancing at runtime, on purpose.** A load test must apply the planned load shape (this many
+users, at this rate, from the start time) rather than finish a fixed amount of work quickly. Workers can still differ
+in *requests* because items cost different amounts (e.g. a `pollUntil` that loops longer for some items); the merged
+report counts every request. Watch for: fewer users than workers (some workers idle), too little `queue` data (users
+stop), a worker that starts late (image pull longer than the start delay), several workers on one node.
+`perf validate --workers N` prints the split per worker before you run; the dashboard's workers table shows
+requests, users and p95 per worker while it runs.
+
+### One result per run
+
+1. Each worker writes its Gatling log (`worker-<i>.log`) and its own final numbers (`worker-<i>.json`).
+2. The report step **merges all logs into one** (records re-based to a common start; tied to Gatling 3.13.1's log
+   format) and builds **one HTML report**; the **SLAs are judged on all the data**. A worker's own SLA printout covers
+   its slice only and is informational.
+3. `report/summary.json` holds the run's final numbers, computed exactly like the HTML report (same t-digest
+   percentiles), for the dashboard and History.
+
+While it runs, every worker serves live Prometheus metrics; the dashboard sums them (and Prometheus can scrape them).
+
+### Ways to run a distributed test
+
+| Way | Who | How |
+|---|---|---|
+| **perf-dashboard on Kubernetes** | testers | *New run* → *Workers (pods)* = N; tests from a saved suite |
+| **perf-dashboard, local mode** | one machine | *Workers (processes)* = N (up to `LOCAL_MAX_WORKERS`, default 8) — shares one machine's CPU |
+| **`perf submit`** | developers, CI | creates the `LoadTest` for you; `perf status --watch` exits with the verdict |
+| **A `LoadTest` resource** | `kubectl apply`, GitOps (Argo CD) | the YAML below |
+| **By hand** | any machines | `perf setup`, N × `perf worker`, `perf report` — see [By hand](#by-hand-without-the-operator) |
+
+### Phases
+
+| Phase | Kubernetes (Job) | Local mode (process) | What happens |
+|---|---|---|---|
+| Validating | `<run>-validate` | `perf validate` | The plan is checked for N workers; a bad plan stops here with the exact YAML error in the run's message. Tests from a saved suite are copied into `<run folder>/tests` first |
+| Setup | `<run>-setup` | `perf setup` | Only if the plan has `setup.share`; runs **once**, writes `shared.json` |
+| Starting → Running | `<run>-workers` (Indexed Job, N pods) | N × `perf worker` | All wait for `START_AT` (= now + start delay), then each runs its share; no retries — a crashed worker fails the run |
+| Aggregating | `<run>-report` | `perf report` | Merge, HTML report, SLA verdict, `summary.json` |
+| Completed / Failed | — | — | `result` = `Passed` / `SLAFailed`, or the reason for the failure |
+
+### The run folder
+
+S3 / MinIO (`results.s3`), a shared volume (`results.pvc`) or, in local mode, the data folder — always the same layout:
+
+```
+perf-results/runs/<run>-<uid8>/
+├── tests/                      the suite as it was when the run started (runs from saved test plans)
+├── shared.json                 setup's lists (plans with setup)
+├── logs/worker-<i>.log         each worker's Gatling log
+├── logs/worker-<i>.json        each worker's final numbers
+└── report/
+    ├── summary.json            the run's final numbers + SLA verdict
+    └── merged/index.html …     the merged Gatling HTML report
+```
+
+`perf fetch s3://perf-results/runs/<run>/report <dir>` downloads a report; the dashboard opens it in the browser.
+
+### The `LoadTest` resource
+
+```yaml
+apiVersion: perf.codelabuk.org/v1alpha1
+kind: LoadTest
+metadata: { name: orders-peak-20261120, namespace: perf }
+spec:
+  image: registry.example.com/perf/labuk-perf-runner:1.0.0
+  plan:
+    file: plans/orders-peak.yaml
+    s3: s3://perf-results/test-plans/orders-api          # a saved suite (the dashboard's Test plans)
+  workers: 10
+  env: { BASE_URL: https://sit.api.example.com }
+  secretRefs: [ perf-secrets ]                          # passwords / tokens as ${...} values
+  resources: { requests: { cpu: "2", memory: 4Gi }, limits: { cpu: "2", memory: 4Gi } }
+  spread: soft
+  results:
+    s3: { url: s3://perf-results/runs, endpoint: http://minio.minio.svc:9000, credentialsSecret: minio-creds }
+  metrics: { enabled: true }
+  startDelaySeconds: 60
+```
+
+| `spec` field | Default | Meaning |
+|---|---|---|
+| `image` | — (required) | The runner image (`labuk-perf-runner`) |
+| `plan.file` | — (required) | The plan: relative to the suite / repository / ConfigMap root, or an absolute path inside the image |
+| `plan.s3` | — | Tests from S3 / MinIO (`s3://bucket/folder`); uses `results.s3`'s endpoint and credentials; copied into the run folder by the validate pod |
+| `plan.git` | — | `{ repo, ref: main, tokenSecret: { name, key: token }, image: alpine/git:2.47.2 }` — `ref` may be a branch, tag or commit SHA |
+| `plan.configMap` | — | A ConfigMap as the tests folder (flat, 1 MB) — what `perf submit --from-dir` creates |
+| `plan.inImage` | `false` | Tests baked into the image (`file` absolute) |
+| `workers` | `1` | Number of worker pods; all plan numbers are totals split across them |
+| `scenarios` | all | Run only these scenarios |
+| `env` | — | Environment variables for every pod (fill `${NAME}` in the plan) |
+| `secretRefs` | — | Secrets whose keys become environment variables |
+| `resources` | none | CPU / memory per worker; the JVM heap is 75 % of the memory limit. Requests must fit the nodes' free capacity |
+| `nodeSelector`, `tolerations` | — | Put workers on dedicated load-generator nodes |
+| `spread` | `soft` | `soft` = one worker per node where possible, never blocks; `hard` = at most one per node (extra workers stay Pending); `none` |
+| `reportResources` | none | CPU / memory of the report pod (merge + report) — more memory for large runs |
+| `results.s3` | — | `{ url: s3://bucket/prefix, endpoint, region: us-east-1, credentialsSecret }` (Secret with `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`) |
+| `results.pvc` | — | An existing claim instead of S3 (ReadWriteMany on multi-node clusters); exactly one of `s3` / `pvc` |
+| `startDelaySeconds` | `60` | Time from creating the workers to their common start — must cover image pulls |
+| `timeoutMinutes` | `180` | Hard limit for the worker phase |
+| `ttlSecondsAfterFinished` | `3600` | Finished Jobs and pods (and their logs) are removed after this |
+| `metrics` | `{ enabled: false, port: 9464, lingerSeconds: 30 }` | Live Prometheus metrics on every worker (+ `prometheus.io/*` annotations); runs from the dashboard enable it |
+
+`status`: `phase`, `message`, `result` (`Passed` / `SLAFailed`), `slaPassed`, `plan`, `scenarios`, `hasSetup`, `runDir`,
+`reportPath`, `startAt`, `startedAt`, `finishedAt`, `workersActive` / `workersSucceeded` / `workersFailed`.
+A finished LoadTest is never re-run — create a new one (new name) for every run. Deleting it stops and removes its
+Jobs and pods; its results stay in the run folder.
+
+### Sizing a distributed test
+
+- **Workers = target requests/s ÷ what one worker sustains below ~70 % CPU, plus ~30 % margin.** A virtual user is a
+  small object, not a thread — waiting users (think time, polling) cost almost nothing, so the limit is requests per
+  second, not users. Rough guide per worker: 2 CPU / 4 Gi ≈ 3–5k users with think time, ~1–2k req/s for small JSON
+  responses (estimates — measure your cluster with `gatling-api-core/src/test/resources/plans/capacity.yaml`, a
+  stepped-rate test for one worker, against a target that can take more than the worker sends).
+- Put workers on **different nodes** (`spread: soft`, the default; `hard` to insist) — several workers on one node
+  share its CPU, network and ports.
+- Large runs (millions of requests) need memory in the report step: `reportResources`.
+- `queue` data needs at least as many rows as users (in total; the split is automatic).
+- The system under test is usually the real limit — ramp up gradually and agree the test with the people who run it.
+
+### By hand (without the operator)
+
+The same steps on any machines (one or many) with the `perf` command; `scripts/local-distributed-demo.sh` does this
+on one machine against the mock API.
+
+```bash
+perf validate plans/orders.yaml --workers 2
+perf setup    plans/orders.yaml --out shared/shared.json                 # only if the plan has setup.share
+# on each worker machine / process (same START_AT everywhere):
+PLAN=plans/orders.yaml WORKER_INDEX=0 WORKER_COUNT=2 START_AT=2026-11-20T10:00:00Z \
+  SHARED_IN=shared/shared.json RESULTS_DIR=results/logs perf worker
+PLAN=plans/orders.yaml WORKER_INDEX=1 WORKER_COUNT=2 START_AT=2026-11-20T10:00:00Z \
+  SHARED_IN=shared/shared.json RESULTS_DIR=results/logs perf worker
+perf report --input results/logs --output results/report                # one report + SLA verdict (exit 0 / 2)
+```
+
+| Worker setting (env / `-D`) | Meaning |
+|---|---|
+| `PLAN` | The plan |
+| `WORKER_INDEX` (or `JOB_COMPLETION_INDEX`) / `WORKER_COUNT` | Which slice this worker runs, of how many |
+| `START_AT` | Common start: ISO-8601 or epoch millis |
+| `SHARED_IN` | setup's `shared.json` (without it each worker runs `setup` itself — it works, but calls the setup APIs N times) |
+| `RESULTS_DIR` | Where `worker-<i>.log` / `.json` go — a shared folder or `s3://bucket/prefix/logs` |
+| `SCENARIO`, `METRICS_PORT`, `METRICS_LINGER_SECONDS` | Scenario filter; live metrics port; how long final metrics stay up |
+
+Every path also takes `s3://…` (credentials from `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`,
+`S3_ENDPOINT`). With Maven the same settings are `-Dworker.index`, `-Dworker.count`, `-Dstart.at`, `-Dmode=setup
+-Dshared.out=…`, `-Dshared.in=…`.
+
+### Good to know
+
+- The start time is fixed when the workers are created (now + start delay); a worker whose image pull takes longer
+  starts late (it logs a warning) — keep the image on the nodes or raise `startDelaySeconds`.
+- A worker that cannot be scheduled (e.g. `Insufficient cpu`, or `spread: hard` with too few nodes) keeps the run
+  in *Running* until `timeoutMinutes`; `kubectl describe pod` shows why.
+- Log merging and live metrics are tied to the pinned Gatling 3.13.1 log format — re-check them when upgrading.
+- Tests from Git: on clusters where the tests volume is owned by root while git runs as uid 1000 the clone fails
+  (`detected dubious ownership`, seen on Docker Desktop) — use saved test plans (`plan.s3`) there.
+
+---
+
+## On Kubernetes (`loadtest-operator`)
+
+The operator runs every `LoadTest` as Jobs (see [Distributed runs — reference](#distributed-runs--reference)).
+Install it once with **Helm**:
+
+```bash
+mvn install                                                     # builds everything; refreshes the chart's CRD
+docker build -t registry.example.com/perf/labuk-perf-runner:1.0.0 gatling-runner          # or: mvn -pl gatling-runner jib:build -Dimage=...
+docker build -t registry.example.com/perf/labuk-loadtest-operator:1.0.0 loadtest-operator
+helm upgrade --install loadtest-operator charts/loadtest-operator -n perf --create-namespace \
+  --set image.repository=registry.example.com/perf/labuk-loadtest-operator --set image.tag=1.0.0
+```
+
+Chart values (`charts/loadtest-operator/values.yaml`): `image.*`, `imagePullSecrets`, `replicaCount` (2 = a standby,
+leader election through a Lease), `resources`, `logLevel`, `nodeSelector` / `tolerations` / `affinity`,
+`serviceAccount.*`, `rbac.create`, pod / container security contexts (non-root, read-only root filesystem). Helm
+installs the CRD on first install but never upgrades it — after an upgrade that changes the CRD run
+`kubectl apply -f charts/loadtest-operator/crds/`. Plain manifests (no Helm): `loadtest-operator/deploy/operator.yaml`.
+
+**Start runs** from the dashboard, with `kubectl apply -f <LoadTest>.yaml`, or with `perf` (developers / CI — needs
+`kubectl` access):
+
+```bash
+export PERF_IMAGE=registry.example.com/perf/labuk-perf-runner:1.0.0 PERF_NAMESPACE=perf
+perf submit plans/orders-peak.yaml --workers 5 --git-repo https://git.example.com/qa/perf-tests.git \
+     --git-ref main --env BASE_URL=https://sit.api.example.com --secret perf-secrets --memory 4Gi \
+     --s3 s3://perf-results/runs --s3-secret minio-creds --s3-endpoint http://minio.minio.svc:9000
+perf submit plans/sr.yaml --from-dir ./perf-tests --workers 2      # local folder -> ConfigMap (flat, 1 MB)
+perf submit ... --dry-run                                           # print the LoadTest instead
+perf status orders-peak-20261120-100000 --watch                     # exit 0 Passed, 2 SLAFailed, 1 Failed
+```
+
+```bash
+kubectl get loadtests -n perf -w     # NAME  PHASE  RESULT  WORKERS  DONE  AGE   (-o wide adds FAILED, MESSAGE)
+kubectl get lt orders-peak-20261120 -n perf -o jsonpath='{.status.result} {.status.reportPath} {.status.message}'
+```
+
+**End-to-end scripts:** `bash scripts/docker-desktop-e2e.sh` (Docker Desktop Kubernetes + MinIO: operator with 2
+replicas, a 3-worker run, `perf status --watch`, `perf fetch`) and `bash scripts/minikube-e2e.sh` (builds the
+images, installs with Helm, runs a 2-worker LoadTest against the in-cluster mock API).
+
+To run the operator from a laptop against a cluster during development: `KUBE_CONTEXT=<context> java -cp ... OperatorMain`.
+
+---
+
+## perf-dashboard (web UI)
+
+Like Spark's UI + history server, for load tests: every run, its phases, **live metrics per worker** while it
+runs, the final numbers, pod logs, and the Gatling HTML report opened straight from S3/MinIO. Design:
+[docs/perf-dashboard-design.md](docs/perf-dashboard-design.md). Code: `perf-dashboard/` (Flask + React, same stack
+as the spark-dashboard).
+
+| Page | Shows |
+|---|---|
+| Runs | every LoadTest: phase, result, workers done/total, start, duration, report link |
+| Run detail | steps (validate → setup → workers → report), cards (requests, errors %, req/s, p95, users, SLAs), live throughput + users charts, per-request and per-transaction tables, errors, **workers table** (pod, node, state, restarts, requests, live users / p95, log viewer), the LoadTest spec, Stop & delete |
+| New run | form → LoadTest from a saved test plan (workers, CPU/memory, env, secrets, start delay, live metrics). Git and ConfigMap sources are for `perf submit`, CI and GitOps, not the dashboard |
+| Test plans | suites of test files in S3 (`s3://perf-results/test-plans/<suite>/`): create (with a starter plan), upload files, a folder or a zip (folders kept), **import a LoadRunner VuGen script** (converted to a new suite, notes shown), edit YAML/CSV in the browser (YAML syntax checked on save), delete, download as zip, start a run from a plan |
+| History | every run folder in the results bucket with its final numbers and report link; **Delete** removes the run's folder from S3 (refused while its run is active) |
+
+Deleting from *Run detail* removes the LoadTest (Jobs, pods); its results stay in S3 unless *also delete results in
+S3* is ticked. Deleting results cannot be undone — for routine clean-up prefer a bucket lifecycle rule (e.g. expire
+`runs/` after 90 days). The dashboard's S3 credentials need write and delete rights on `test-plans/` and `runs/`.
+
+```bash
+docker build -t labuk-perf-dashboard:1.0.0 perf-dashboard            # build the runner image first (Java + converter come from it)
+helm upgrade --install perf-dashboard charts/perf-dashboard -n perf   --set results.url=s3://perf-results/runs --set results.s3Endpoint=http://minio.minio.svc:9000   --set results.credentialsSecret=minio-creds                          # Secret with AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
+kubectl -n perf port-forward svc/perf-dashboard 8080:80                # or --set ingress.enabled=true (host perf-dashboard.codelabuk.dev)
+```
+
+### Without Kubernetes (local mode)
+
+The same dashboard runs on **one machine with only Java 17+ and Python 3.10+** — no Kubernetes, no Docker, no
+MinIO. Tests run as local `perf` processes (validate → setup → N workers → merged report, the same commands the
+operator's Jobs run); results and test plans live in a folder with the same layout as in MinIO.
+
+```bash
+# from a checkout (after mvn -pl gatling-runner -am package and npm run build in frontend/):
+cd perf-dashboard && start.cmd       # Windows   (./start.sh on Linux / macOS) -> http://127.0.0.1:5000, data in .\perf-data
+start.cmd --port 8080 --data D:\perf-data
+
+# for another machine: one package with the UI, the backend and the perf distribution (~72 MB)
+cd perf-dashboard && python package_local.py          # -> build/perf-dashboard-local.zip; unzip there, then start.cmd
+```
+
+The first start creates a Python environment and installs `requirements-local.txt` (or from `wheels/` with
+`package_local.py --with-wheels`, for machines without internet). From a checkout: `python local_main.py`.
+
+| | Local mode |
+|---|---|
+| Runs | each worker is a process (at most `LOCAL_MAX_WORKERS`, default 8); memory per worker sets its Java heap (75 %); live metrics from a port per worker |
+| Storage | `--data` folder: `perf-results/test-plans/<suite>/…` and `perf-results/runs/<run>/…` (tests copy, logs, report, summary) |
+| Not available | spreading over nodes, node selection, CPU limits, runner image (Kubernetes features); Git / ConfigMap plan sources |
+| Restart | stopping the dashboard stops the tests that are running (marked Failed on the next start); finished results stay |
+| Network | listens on 127.0.0.1 by default — `--host 0.0.0.0` lets other machines in (the dashboard has no login) |
+
+Use it to build and try test plans and for small / medium tests; one machine's CPU is shared by every worker, so big
+distributed tests belong on the Kubernetes dashboard.
+
+How the numbers work:
+- **live** (while Running): the dashboard scrapes each worker's `/metrics` (runs need `metrics.enabled`, on by
+  default for runs started from the dashboard) and sums them; finished workers keep counting with their last
+  numbers, so totals never go down. p95 here is an estimate from histogram buckets. Small tests update in steps
+  (Gatling writes its log in chunks).
+- **final** (Completed): `perf worker` writes `logs/worker-<i>.json` and `perf report` writes
+  `report/summary.json` next to the report; the dashboard reads those. Percentiles are computed exactly like
+  Gatling's report (same t-digest), so the dashboard and the HTML report show the same numbers.
+
+Limits (v1): on Kubernetes, results must be in S3 / MinIO (PVC results show status and pods only); **no login** —
+anyone who can open it can edit plans and delete results, so keep it behind your ingress / network rules or put SSO in
+front of it.
+
+Developing it: `cd perf-dashboard && python -m venv .venv && .venv/Scripts/pip install -r requirements.txt pytest`
+then `python -m pytest tests` (includes a real local run with the perf distribution); UI: `cd frontend && npm install
+&& npm run dev` (proxies `/api` to a local `python app.py` with `KUBE_CONTEXT=...`, or to `python local_main.py`).
+
+---
+
+## The `perf` command (developers and CI)
+
+Testers use the [perf-dashboard](#perf-dashboard-web-ui). The `perf` command is for framework developers
+(debugging a plan locally, converting LoadRunner scripts) and CI pipelines; it is also what runs inside every pod of
+a distributed run, and what the dashboard's local mode starts.
+
+Build once (framework team): `mvn install` → `gatling-runner/target/perf-1.0-SNAPSHOT.zip`.
+Unzip it anywhere; only Java 17+ is needed.
+
+```bash
+perf validate plans/orders.yaml --workers 4          # check a plan, see the per-worker split
+perf run      plans/orders.yaml -DBASE_URL=https://sit.api.example.com
+perf run      plans/orders.yaml --scenario checkout --results D:/perf-results
+```
+(Windows: `perf.cmd ...`; Git Bash works with `perf` too.)
+
+| Command | What it does |
+|---|---|
+| `perf validate <plan> [--workers N]` | Checks the plan without sending traffic; prints the split per worker |
+| `perf run <plan> [options] [-DNAME=value]` | Runs it on this machine; HTML report under `results/` |
+| `perf setup <plan> --out shared.json` | Runs only `setup` and saves its shared lists (distributed runs) |
+| `perf worker` | One worker of a distributed run; settings from env (`PLAN`, `WORKER_INDEX`/`JOB_COMPLETION_INDEX`, `WORKER_COUNT`, `START_AT`, `SHARED_IN`, `RESULTS_DIR`); writes `worker-<i>.log` |
+| `perf report --input <logs> [--output <dir>]` | Merges workers' logs → one report + SLA verdict |
+| `perf submit <plan> --workers N ...` | Starts a distributed run on Kubernetes (no LoadTest YAML to write) — see [On Kubernetes](#on-kubernetes-loadtest-operator) |
+| `perf status <run> [-n ns] [--watch]` | Follows it; with `--watch` the exit code is the verdict |
+| `perf fetch <s3://folder> [<dir>] [--snapshot <s3://folder>]` | Downloads a report / logs / test folder from S3 or MinIO (keeps the folder structure); `--snapshot` also copies what was downloaded to another S3 folder (the operator uses it to freeze a run's tests) |
+| `perf convert-lr <VuGen script dir> [--out <dir>]` | Converts a LoadRunner web script to a YAML plan — see [LoadRunner scripts](#loadrunner-scripts-perf-convert-lr) |
+
+Options for `run` / `worker`: `--scenario a,b`, `--results <dir>`, `--workers N --worker-index i`,
+`--start-at <time>`, `--shared-in <file>`, `--no-reports`, `--description <text>`, `--metrics-port <port>`,
+`-DNAME=value`. Environment: `PERF_HEAP` (default `2g`), `PERF_JAVA_OPTS`, `JAVA_HOME`.
+**Exit codes:** `0` OK · `1` error or invalid plan · `2` SLAs failed — use them in CI
+(examples: `docs/ci/Jenkinsfile`, `docs/ci/gitlab-ci.yml`).
+
+**Results in S3 / MinIO** — every path option also takes `s3://bucket/prefix/...`:
+`perf setup --out s3://.../shared.json`, `SHARED_IN=s3://...`, `RESULTS_DIR=s3://.../logs`,
+`perf report --input s3://.../logs --output s3://.../report`. Credentials and endpoint come from the standard
+variables `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` (`AWS_SESSION_TOKEN`), `AWS_REGION`, and `S3_ENDPOINT`
+for MinIO (e.g. `http://minio.perf:9000`). Built-in client (no AWS SDK): access keys only — EKS IRSA /
+web-identity roles are not supported.
+
+The zip contains `bin/` (launchers), `lib/` (engine, Gatling, SQL support, Oracle + PostgreSQL drivers),
+`drivers/` (drop extra JDBC jars here) and `conf/logback.xml` (logging).
+
+**Docker image** — plain `docker build` (verified) or Jib (no Docker daemon needed, good for pushing from CI):
+```bash
+mvn -pl gatling-runner -am package
+docker build -t labuk-perf-runner:1.0-SNAPSHOT gatling-runner                     # Dockerfile path
+mvn -pl gatling-runner jib:build -Dimage=<registry>/labuk-perf-runner              # or Jib, straight to a registry
+docker run --rm -v "$PWD/perf-tests:/tests" labuk-perf-runner:1.0-SNAPSHOT run /tests/plans/orders.yaml
+```
+The image runs as a non-root user, sizes its heap from the container memory limit (75%), reads extra
+drivers from `/opt/perf/drivers/`, and writes worker results to `RESULTS_DIR` (default `/tmp/results` —
+mount a volume there, or use `s3://`). (On the dev laptop Jib's hand-off to Docker Desktop stalled, so the
+Dockerfiles are the tested local path.)
+
+**Live metrics** — `perf run plans/x.yaml --metrics-port 9464` (or `METRICS_PORT`; with Maven
+`-Dmetrics.port=9464`) serves Prometheus metrics on `http://<host>:9464/metrics` while the test runs:
+
+| Metric | Labels |
+|---|---|
+| `perf_requests_total` | `request` (incl. transaction path), `status` OK/KO — API calls, SQL steps, poll results |
+| `perf_response_time_ms` (histogram) | `request` — use `histogram_quantile(0.95, ...)` for p95 |
+| `perf_transactions_total`, `perf_transaction_duration_ms` | `transaction`, `status` |
+| `perf_users_active` (gauge), `perf_users_started_total` | `scenario` |
+| `perf_errors_total` | `message` (top 50) |
+
+Every series has `plan` and `worker` labels, so dashboards sum across workers. A Grafana dashboard is in
+`docs/grafana/perf-dashboard.json` (import it, pick the Prometheus data source).
+How it works: Gatling's open-source edition cannot stream metrics, so each worker follows its own
+`simulation.log` as it is written — the totals match the final report exactly. Gatling writes that log in
+chunks, so the numbers trail by ~1 s at hundreds of req/s and by up to ~20 s at a few req/s (`perf` halves the
+chunk to 4 KB when metrics are on; with Maven add `-Dgatling.data.file.bufferSize=4096`). After the load ends
+a worker keeps serving its final values for 15 s (`METRICS_LINGER_SECONDS`) so the last scrape sees them.
+On Kubernetes set `spec.metrics.enabled: true` in the LoadTest: worker pods get the port and
+`prometheus.io/scrape` annotations.
+
+Gatling's anonymous usage analytics are switched off in `perf` and in the Maven runs.
+
+---
+
 ## LoadRunner / JMeter → this framework
 
 | LoadRunner | JMeter | Here |
@@ -876,7 +994,9 @@ It is not a comparison against LoadRunner's own numbers - for that, run the same
 | `lr_rendezvous` | Synchronizing timer | `rendezvous` |
 | Controller schedule / goal-oriented | Thread group schedule / throughput timer | `load` / `throttle` |
 | SLA | Assertions + plugins | `sla` |
-| Load generators | Master/slave | Workers + merge ([Distributed runs](#distributed-runs)) → Kubernetes operator (planned) |
+| Load generators / Controller | Master / slave (remote engines) | Workers + merge on Kubernetes (operator) or by hand — [Distributed runs](#distributed-runs--reference) |
+| Analysis | HTML report / listeners | One merged Gatling report per run, the dashboard, History |
+| VuGen script | `.jmx` | YAML plan — `perf convert-lr` / *Import LoadRunner script* converts VuGen web scripts |
 
 ---
 
@@ -890,8 +1010,16 @@ It is not a comparison against LoadRunner's own numbers - for that, run the same
 - **Run fails in Validating with "file not found"** — the plan's `include` / data paths are relative to the file
   they are written in; check the suite's layout on the *Test plans* page (a zip of a folder is unpacked without
   that folder's name).
+- **A run stays in *Running* / a worker is Pending** — the worker cannot be scheduled: CPU / memory requests do not
+  fit the nodes, or `spread: hard` with fewer nodes than workers. `kubectl describe pod <worker>` shows the reason.
+- **One worker has far fewer requests** — too little `queue` data, fewer users than workers, or it started late; see
+  [How the load and the data are split](#how-the-load-and-the-data-are-split).
+- **The dashboard shows no suites in local mode** — local mode has its own data folder (`perf-data`); create or upload
+  a suite on its *Test plans* page.
 - **See request/response details for failures** — in `logback-test.xml` set
   `io.gatling.http.engine.response` to `TRACE` (failed requests) or `DEBUG` (all requests).
+
+---
 
 ## For framework developers
 
@@ -907,8 +1035,77 @@ Engine code: `gatling-api-core/src/main/scala/org/codelabuk/perf/`
 | `sim` | `YamlSimulation` — the single generic simulation |
 | `cli` | `Validate` and `Merge` command-line tools |
 | `results` | `LogMerger` — combines workers' `simulation.log` files |
+| `metrics` | `LiveLogReader`, `LiveMetrics` (Prometheus endpoint), `RunSummary` (exact final numbers) |
 | `plugin` | Extension points: `StepPlugin`, `DataSourcePlugin` (via `META-INF/services`) |
 
 A new step kind or protocol is a plugin module on the classpath; existing plans keep working.
-`gatling-sql` is the reference example: `SqlStepPlugin` (the `sql:` step) and `JdbcDataSourcePlugin`
-(`type: jdbc`), registered in `src/main/resources/META-INF/services/`.
+`gatling-sql` and `gatling-flight` are the reference examples: `SqlStepPlugin` / `JdbcDataSourcePlugin` and
+`FlightStepPlugin` / `FlightDataSourcePlugin`, registered in `src/main/resources/META-INF/services/`. Blocking clients
+(JDBC, Flight) run on their own thread pools, never on Gatling's.
+
+**Build and test everything:** `mvn install` (engine, SQL, Flight, runner and operator tests — about 90 JVM tests,
+including real Gatling runs), then `cd perf-dashboard && .venv/Scripts/python -m pytest tests`. Netty and gRPC versions
+are aligned for all modules in the parent `pom.xml` (one Netty — Gatling's — and gRPC 1.76).
+
+### Running plans with Maven
+
+```bash
+# build + unit tests
+mvn -pl gatling-api-core test
+
+# demo: a sample plan against a built-in mock API (no network needed)
+mvn -pl gatling-api-core test-compile gatling:test -DskipTests \
+    -Dgatling.simulationClass=org.codelabuk.perf.it.MockedYamlSimulation
+
+# check a plan without running it (and see how it splits across 4 workers)
+mvn -pl gatling-api-core test-compile exec:exec@validate -Dperf.args="D:/perf-tests/plans/orders.yaml --workers 4"
+
+# run YOUR plan
+mvn -pl gatling-api-core test-compile gatling:test -DskipTests -Dplan=D:/perf-tests/plans/orders.yaml
+
+# what the Kubernetes operator will do (setup once, 2 workers, merged report), locally against the mock
+bash scripts/local-distributed-demo.sh
+```
+
+The HTML report path is printed at the end of each run (`gatling-api-core/target/gatling/<run>/index.html`).
+The demo plan lives in [`gatling-api-core/src/test/resources/plans`](gatling-api-core/src/test/resources/plans) —
+it is the best place to start copying from.
+
+#### Run options
+
+| Option | Meaning |
+|---|---|
+| `-Dplan=path.yaml` | **Required.** The plan to run. Relative paths resolve from where you run `mvn`. (env: `PLAN`) |
+| `-Dscenario=a,b` | Run only these scenarios of the plan. (env: `SCENARIO`) |
+| `-Dperf.heap=4g` | Load generator memory (default `2g`). Keep it to about half the machine's RAM. |
+| `-DNAME=value` | Fills `${NAME}` placeholders in the YAML — environments, secrets. Environment variables work too. |
+| `-Dworker.index=0 -Dworker.count=1` | Distributed runs — which slice of the load this JVM runs. (env: `WORKER_INDEX` / `JOB_COMPLETION_INDEX`, `WORKER_COUNT`) |
+| `-Dstart.at=...` | Wait until this moment before starting load — epoch millis or ISO-8601 (`2026-11-20T10:00:00Z`). (env: `START_AT`) |
+| `-Dmode=setup -Dshared.out=f.json` | Run only the plan's `setup` and write its shared lists to a file. (env: `MODE`, `SHARED_OUT`) |
+| `-Dshared.in=f.json` | Skip `setup`; take the shared lists from that file. (env: `SHARED_IN`) |
+
+One run = one plan. A plan can contain several scenarios that run in parallel.
+See [By hand](#by-hand-without-the-operator) for how the last four fit together.
+
+#### Validating a plan
+
+```bash
+mvn -pl gatling-api-core test-compile exec:exec@validate -Dperf.args="plans/orders.yaml --workers 4 --scenario checkout"
+```
+
+Loads the plan exactly like a run would (includes, CSV files, `${...}` placeholders, conditions, SLA targets)
+without sending any traffic, then prints how users and data split across the workers and warns when a
+`queue` data source would run out. Exit code 0 = valid, 1 = invalid — use it in CI on every merge request.
+
+---
+
+## Further documents
+
+| Document | What |
+|---|---|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How the pieces fit together, design decisions, security, known limits — with diagrams |
+| [docs/architecture/](docs/architecture/) | The diagrams as Mermaid (`.mmd`) and PlantUML (`.puml`) sources |
+| [docs/perf-dashboard-design.md](docs/perf-dashboard-design.md) | The dashboard: pages, API, test plans, local mode, deletion |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Status of every module, what was verified, open items |
+| [docs/ci/](docs/ci/) | Jenkins and GitLab examples |
+| [docs/grafana/](docs/grafana/) | Grafana dashboard for the live metrics |
